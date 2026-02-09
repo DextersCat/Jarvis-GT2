@@ -110,7 +110,8 @@ try:
         "silence_duration": 1.2,
         "min_speech_duration": 0.5,
         "barge_in_enabled": True,
-        "barge_in_threshold": 800
+        "barge_in_threshold": 800,
+        "barge_in_delay": 1.0
     })
 except FileNotFoundError:
     print("ERROR: config.json not found!")
@@ -169,6 +170,7 @@ class JarvisGT2(ctk.CTk):
         self.min_speech_duration = VAD_SETTINGS.get("min_speech_duration", 0.5)
         self.barge_in_enabled = VAD_SETTINGS.get("barge_in_enabled", True)
         self.barge_in_threshold = VAD_SETTINGS.get("barge_in_threshold", 800)
+        self.barge_in_delay = VAD_SETTINGS.get("barge_in_delay", 1.0)
         
         # Barge-in control flags
         self.is_speaking = False
@@ -338,8 +340,9 @@ class JarvisGT2(ctk.CTk):
         return False
     
     def start_vad_monitor(self):
-        """Start VAD monitor thread for barge-in detection."""
-        if not self.barge_in_enabled or self.vad_monitor_active:
+        """Start VAD monitor thread for barge-in detection (Normal Mode only)."""
+        # Only enable barge-in in Normal Mode (not Conversation Mode)
+        if not self.barge_in_enabled or self.vad_monitor_active or self.conversation_mode:
             return
         
         logger.info("Starting VAD monitor for barge-in detection...")
@@ -364,8 +367,25 @@ class JarvisGT2(ctk.CTk):
         """Monitor microphone for speech while Jarvis is speaking (barge-in detection)."""
         logger.info("VAD monitor loop active")
         
+        # Wait for barge_in_delay before starting to actually monitor
+        # This prevents Jarvis from interrupting himself when speech starts
+        if self.barge_in_delay > 0:
+            logger.debug(f"VAD monitor waiting {self.barge_in_delay}s before starting...")
+            start_time = time.time()
+            while time.time() - start_time < self.barge_in_delay:
+                if not self.vad_monitor_active or not self.is_speaking:
+                    logger.debug("VAD monitor cancelled during startup delay")
+                    return
+                time.sleep(0.1)
+            logger.debug("VAD monitor delay complete - starting barge-in detection")
+        
         try:
             while self.vad_monitor_active:
+                # Stop if conversation mode is enabled (no barge-in needed there)
+                if self.conversation_mode:
+                    logger.info("Conversation mode enabled - stopping VAD monitor")
+                    break
+                
                 # Only monitor when Jarvis is speaking
                 if not self.is_speaking:
                     time.sleep(0.05)

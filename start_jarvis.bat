@@ -1,6 +1,10 @@
 @echo off
 REM Jarvis GT2 Startup Script
 REM Closes any running instances and starts fresh
+REM This version can run from anywhere (Desktop, Start Menu, etc.)
+
+REM Set the project directory (absolute path)
+set JARVIS_DIR=C:\Users\spencer\Documents\Projects\New_Jarvis\Ear
 
 echo ========================================
 echo Starting Jarvis GT2...
@@ -25,14 +29,32 @@ if "%ERRORLEVEL%"=="0" (
 
 echo.
 echo ========================================
+echo Navigating to Jarvis directory...
+echo ========================================
+echo.
+
+REM Change to Jarvis project directory
+cd /d "%JARVIS_DIR%"
+
+if not exist "%JARVIS_DIR%" (
+    echo ERROR: Jarvis directory not found!
+    echo Expected location: %JARVIS_DIR%
+    echo Please update the JARVIS_DIR variable in this script.
+    pause
+    exit /b 1
+)
+
+echo.
+echo ========================================
 echo Activating Python environment...
 echo ========================================
 echo.
 
 REM Check if virtual environment exists
-if not exist ".venv\Scripts\activate.bat" (
+if not exist "%JARVIS_DIR%\.venv\Scripts\activate.bat" (
     echo ERROR: Virtual environment not found!
     echo Please create .venv first:
+    echo   cd %JARVIS_DIR%
     echo   python -m venv .venv
     echo   .venv\Scripts\activate
     echo   pip install -r requirements.txt
@@ -41,7 +63,7 @@ if not exist ".venv\Scripts\activate.bat" (
 )
 
 REM Activate virtual environment and run Jarvis
-call .venv\Scripts\activate.bat
+call "%JARVIS_DIR%\.venv\Scripts\activate.bat"
 
 echo.
 echo ========================================
@@ -50,10 +72,10 @@ echo ========================================
 echo.
 
 REM Run Jarvis GT2
-python jarvisgt2.py
+python "%JARVIS_DIR%\jarvisgt2.py"
 
 REM If Jarvis exits, deactivate venv
-call .venv\Scripts\deactivate.bat
+call "%JARVIS_DIR%\.venv\Scripts\deactivate.bat"
 
 echo.
 echo ========================================

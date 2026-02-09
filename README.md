@@ -112,18 +112,26 @@ Edit `config.json` with your credentials:
   - Lower values = more sensitive (easier to interrupt)
   - Typical speech energy: 1500-3000+
   - Keyboard/mouse noise: 800-1200
+- **barge_in_delay**: Seconds to wait before monitoring for barge-in (default: 1.0)
+  - Prevents Jarvis from interrupting himself when speech starts
+  - Allows speaker output to settle before monitoring microphone
+  - Increase if Jarvis still interrupts himself
 
 ## Usage
 
 ### Quick Start (Windows)
 
-Double-click `start_jarvis.bat` - automatically handles:
+Double-click `start_jarvis.bat` from anywhere - automatically handles:
 - Closing any existing instances
+- Navigating to project directory
 - Activating virtual environment
 - Launching Jarvis GT2
 
+**Desktop Shortcut**: Copy `start_jarvis.bat` to your Desktop for easy access!
+
 Or manually:
 ```powershell
+cd C:\path\to\Jarvis-GT2
 .\.venv\Scripts\Activate.ps1
 python jarvisgt2.py
 ```
