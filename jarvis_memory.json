@@ -1,0 +1,44 @@
+{
+  "master_location": "Kent,UK",
+  "master_coordinates": {
+    "latitude": 51.172096,
+    "longitude": 0.498793
+  },
+  "master_profile": {
+    "name": "Spencer",
+    "working_method": "Research \u2192 Propose \u2192 Test \u2192 Verify",
+    "communication_style": "Concise, low-friction, health-conscious",
+    "health_profile": {
+      "chronic_pain": true,
+      "anxiety": true,
+      "stress_prone": true,
+      "depression_prone": true,
+      "recommended_break_interval": 90
+    }
+  },
+  "facts": [
+    "I serve Spencer from Kent, UK",
+    "My location is Kent with coordinates 51.172096, 0.498793",
+    "I use Ollama with llama3.1:8b as my brain",
+    "I can search the web and access Google services",
+    "Spencer works using: Research \u2192 Propose \u2192 Test \u2192 Verify method",
+    "Spencer manages chronic pain and anxiety"
+  ],
+  "projects": {
+    "dogzilla": {
+      "name": "Dogzilla",
+      "type": "ESP32-based robotics project",
+      "description": "Mobile robotics platform using ESP32 microcontroller",
+      "status": "Active Development",
+      "components": [
+        "ESP32 microcontroller",
+        "Motor drivers",
+        "Sensors",
+        "Custom firmware"
+      ]
+    }
+  },
+  "conversation_history": [],
+  "last_break_time": null,
+  "interaction_count": 0
+}

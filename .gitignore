@@ -1,0 +1,35 @@
+# Large model files (download separately)
+jarvis-high.onnx
+jarvis-high.onnx.json
+
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Credentials (keep private)
+credentials.json
+token.json
+config.json
+
+# Generated audio
+yes.wav
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
