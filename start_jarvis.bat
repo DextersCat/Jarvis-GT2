@@ -5,6 +5,7 @@ REM This version can run from anywhere (Desktop, Start Menu, etc.)
 
 REM Set the project directory (absolute path)
 set JARVIS_DIR=C:\Users\spencer\Documents\Projects\New_Jarvis
+set DASHBOARD_DIR=%JARVIS_DIR%\GUI\Cyber-Grid-Dashboard
 
 echo ========================================
 echo Starting Jarvis GT2...
@@ -14,6 +15,10 @@ echo.
 REM Kill any existing Python processes running Jarvis
 echo Checking for existing Jarvis instances...
 powershell -Command "Get-Process python,pythonw -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -match 'jarvis_main.py|jarvis_ear.py|jarvis_main_legacy.py'} | Stop-Process -Force"
+
+REM Kill any existing Node processes for n8n or dashboard
+echo Checking for existing n8n/dashboard instances...
+powershell -Command "Get-Process node -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -match 'n8n|server/index.ts|Cyber-Grid-Dashboard|vite|tsx'} | Stop-Process -Force"
 
 REM Wait a moment for cleanup
 timeout /t 2 /nobreak >NUL
@@ -32,6 +37,14 @@ if not exist "%JARVIS_DIR%" (
     echo ERROR: Jarvis directory not found!
     echo Expected location: %JARVIS_DIR%
     echo Please update the JARVIS_DIR variable in this script.
+    pause
+    exit /b 1
+)
+
+if not exist "%DASHBOARD_DIR%" (
+    echo ERROR: Dashboard directory not found!
+    echo Expected location: %DASHBOARD_DIR%
+    echo Please update the DASHBOARD_DIR variable in this script.
     pause
     exit /b 1
 )
@@ -62,26 +75,23 @@ if not exist "%JARVIS_DIR%\requirements.txt" (
     exit /b 1
 )
 
-REM Activate virtual environment and run Jarvis
-call "%JARVIS_DIR%\.venv\Scripts\activate.bat"
-
-REM Run dependency check
-python "%JARVIS_DIR%\check_dependencies.py"
-
 echo.
 echo ========================================
-echo Launching Jarvis GT2...
+echo Launching Jarvis GT2, n8n, and Dashboard...
 echo ========================================
 echo.
 
-REM Run Jarvis GT2
-python "%JARVIS_DIR%\jarvis_main.py"
+REM Start Jarvis in its own window
+start "Jarvis GT2" cmd /k "cd /d %JARVIS_DIR% && call .venv\Scripts\activate.bat && set PYTHONIOENCODING=utf-8 && python check_dependencies.py && python jarvis_main.py"
 
-REM If Jarvis exits, deactivate venv
-call "%JARVIS_DIR%\.venv\Scripts\deactivate.bat"
+REM Start dashboard server in its own window
+start "Cyber-Grid Dashboard" cmd /k "cd /d %DASHBOARD_DIR% && npm run dev"
+
+REM Start n8n in its own window
+start "n8n" cmd /k "n8n start"
 
 echo.
 echo ========================================
-echo Jarvis GT2 stopped.
+echo Startup complete. Check the new windows.
 echo ========================================
 pause

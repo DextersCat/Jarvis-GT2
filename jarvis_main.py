@@ -28,6 +28,7 @@ from flask import Flask, request, jsonify
 from datetime import datetime
 from vault_reference import VaultReference
 from memory_index import MemoryIndex
+from dashboard_bridge import DashboardBridge
 
 # Load environment variables from .env file
 try:
@@ -181,12 +182,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class JarvisGT2(ctk.CTk):
+class JarvisGT2:
     def __init__(self):
-        super().__init__()
-        self.title("New Jarvis GT2 - Integrated Command Center")
-        self.geometry("600x700")
-        ctk.set_appearance_mode("dark")
+        # Remove Tkinter GUI initialization - now headless with Cyber-Grid Dashboard
+        # All UI handled by: http://localhost:5000
+        
+        # Create dummy status_var for compatibility (Tkinter removed)
+        class DummyVar:
+            def set(self, value): pass
+        self.status_var = DummyVar()
 
         self.is_listening = False
         self.gaming_mode = False
@@ -258,31 +262,16 @@ class JarvisGT2(ctk.CTk):
             logger.warning("⚠ Vault index not available - file searches may be limited")
             self.log("⚠ Vault index not loaded - generate with: python create_vault_index.py")
         
-        logger.info("Jarvis GT2 initializing...")
-
-        # GUI Layout
-        self.label = ctk.CTkLabel(self, text="NEW JARVIS GT2", font=("Arial", 28, "bold"))
-        self.label.pack(pady=20)
-
-        self.status_var = ctk.StringVar(value="Status: Standby")
-        self.status_label = ctk.CTkLabel(self, textvariable=self.status_var, font=("Arial", 16), text_color="cyan")
-        self.status_label.pack(pady=5)
-
-        self.gaming_mode_switch = ctk.CTkSwitch(self, text="🎮 Gaming Mode (Disable Mic)", command=self.toggle_gaming_mode)
-        self.gaming_mode_switch.pack(pady=15)
-
-        self.conversation_mode_switch = ctk.CTkSwitch(self, text="💬 Conversation Mode (Continuous)", command=self.toggle_conversation_mode)
-        self.conversation_mode_switch.pack(pady=10)
-
-        self.console = ctk.CTkTextbox(self, width=550, height=350, font=("Consolas", 12))
-        self.console.pack(pady=10)
-
-        self.log("System Online. Google Services Connected.")
-        logger.info("System initialized successfully")
+        # Initialize Dashboard Bridge
+        self.dashboard = DashboardBridge()
+        self.dashboard.on_health_update = self.handle_health_update
+        self.dashboard.on_state_change = self.handle_dashboard_state_change
+        self.dashboard.start()
         
-        # Set up window close protocol
-        self.protocol("WM_DELETE_WINDOW", self.on_closing)
-        logger.debug("Window close protocol registered")
+        logger.info("Jarvis GT2 initializing...")
+        logger.info("🌐 UI handled by Cyber-Grid Dashboard at http://localhost:5000") 
+        logger.info("🔊 Running in HEADLESS mode - no Tkinter GUI")
+        logger.info("System initialized successfully")
         
         # Initialize n8n webhook listener for priority notifications
         self.setup_n8n_webhook()
@@ -305,6 +294,11 @@ class JarvisGT2(ctk.CTk):
         logger.info("Window close requested - shutting down...")
         self.log("Shutting down Jarvis...")
         
+        # Stop dashboard bridge
+        if hasattr(self, 'dashboard'):
+            self.dashboard.push_state(mode="idle")  # Set to idle before shutdown
+            self.dashboard.stop()
+        
         # Stop listening
         self.is_listening = False
         self.gaming_mode = True  # Force stop all audio
@@ -319,13 +313,28 @@ class JarvisGT2(ctk.CTk):
         self.destroy()
 
     def log(self, text):
-        """Log to both GUI console and system logger."""
-        timestamp = time.strftime('%H:%M:%S')
-        # Check if console exists before trying to access it
-        if hasattr(self, 'console') and self.console:
-            self.console.insert("end", f"[{timestamp}] {text}\n")
-            self.console.see("end")
+        """Log to system logger and dashboard (headless mode)."""
         logger.info(text)
+        
+        # Push to dashboard
+        if hasattr(self, 'dashboard'):
+            # Map log types
+            level = "info"
+            upper_text = text.upper()
+            if "❌" in text or "ERROR" in upper_text or "FAILED" in upper_text:
+                level = "error"
+            elif "⚠" in text or "WARN" in upper_text:
+                level = "warn"
+            elif "LISTENING" in upper_text or "WAKE WORD" in upper_text:
+                level = "listen"
+            elif "TRANSCRIB" in upper_text or "PROCESS" in upper_text or "ANALYZ" in upper_text:
+                level = "process"
+            elif "JARVIS:" in upper_text or "SPEAK" in upper_text or "TTS" in upper_text:
+                level = "speak"
+            elif "✓" in text or "SUCCESS" in upper_text or "COMPLETE" in upper_text:
+                level = "success"
+            
+            self.dashboard.push_log(level, text)
     
     def load_memory(self):
         """Load persistent memory from jarvis_memory.json."""
@@ -390,6 +399,80 @@ class JarvisGT2(ctk.CTk):
             logger.info("✓ Memory saved to disk")
         except Exception as e:
             logger.error(f"Failed to save memory: {e}")
+    
+    def handle_health_update(self, metric_type: str, level: int):
+        """Handle health updates from dashboard (mood/pain tracker).
+        
+        Args:
+            metric_type: "pain" or "anxiety"
+            level: 0-4 (None, Mild, Moderate, Severe, Extreme)
+        """
+        level_names = ["None", "Mild", "Moderate", "Severe", "Extreme"]
+        level_name = level_names[level] if 0 <= level < len(level_names) else "Unknown"
+        
+        # Log to memory
+        health_record = {
+            "timestamp": datetime.now().isoformat(),
+            "type": metric_type,
+            "level": level,
+            "level_name": level_name
+        }
+        
+        # Store in memory
+        if "health_logs" not in self.memory:
+            self.memory["health_logs"] = []
+        self.memory["health_logs"].append(health_record)
+        self.save_memory()
+        
+        self.log(f"📊 Health logged: {metric_type.title()} = {level_name}")
+        
+        # If pain > 3 (Severe), respond with concern
+        if metric_type == "pain" and level > 3:
+            response = "I've logged your pain level, Sir. I will keep our responses concise to save your energy."
+            self.log(f"Jarvis: {response}")
+            self.speak_with_piper(response)
+    
+    def handle_dashboard_state_change(self, key: str, value: bool):
+        """Handle state changes from dashboard UI toggles.
+        
+        Args:
+            key: State key - "gamingMode", "muteMic", or "conversationalMode"
+            value: New boolean value
+        """
+        if key == "gamingMode":
+            self.gaming_mode = value
+            if value:
+                self.log("🎮 Gaming Mode: ENABLED")
+                self.log("   → Mic disabled, resources freed")
+                logger.info("Gaming mode activated - stopping all listening and freeing resources")
+                self.is_listening = False
+                # Update dashboard
+                self.dashboard.push_state(mode="idle")
+            else:
+                self.log("🎮 Gaming Mode: DISABLED")
+                self.log("   → Resuming normal operation")
+                logger.info("Gaming mode deactivated - resuming normal operation")
+                self.start_listening()
+                
+        elif key == "muteMic" or key == "muteMic":
+            # For now, just log the change (muting could be implemented in audio capture)
+            if value:
+                self.log("🔇 Microphone: MUTED")
+            else:
+                self.log("🔊 Microphone: UNMUTED")
+                
+        elif key == "conversationalMode":
+            self.conversation_mode = value
+            if value:
+                self.log("💬 Conversation Mode: ENABLED")
+                self.log("   → Open mic, natural dialogue")
+                if not self.is_listening:
+                    self.start_listening()
+            else:
+                self.log("💬 Conversation Mode: DISABLED")
+                self.log("   → Now requires wake word")
+                self.conversation_mode = False
+    
     
     def get_file_content(self, reference_name):
         """
@@ -1225,7 +1308,8 @@ Format your response as a clear, professional code review suitable for documenta
 
     def toggle_gaming_mode(self):
         """Gaming Mode disables the microphone completely and frees resources."""
-        self.gaming_mode = self.gaming_mode_switch.get()
+        # Toggle the state
+        self.gaming_mode = not self.gaming_mode
         
         if self.gaming_mode:
             self.log("🎮 Gaming Mode: ENABLED")
@@ -1236,10 +1320,12 @@ Format your response as a clear, professional code review suitable for documenta
             self.is_listening = False
             self.cleanup_audio_resources()
             
+            # Update dashboard: idle when gaming mode enabled
+            if hasattr(self, 'dashboard'):
+                self.dashboard.push_state(mode="idle", gamingMode=True)
+            
             # Disable conversation mode
-            if self.conversation_mode:
-                self.conversation_mode_switch.deselect()
-                self.conversation_mode = False
+            self.conversation_mode = False
             
             self.status_var.set("Status: Gaming Mode - Mic Off")
         else:
@@ -1248,19 +1334,23 @@ Format your response as a clear, professional code review suitable for documenta
             logger.info("Gaming mode deactivated - returning to normal mode")
             self.status_var.set("Status: Standby")
             
+            # Update dashboard: idle when gaming mode disabled
+            if hasattr(self, 'dashboard'):
+                self.dashboard.push_state(mode="idle", gamingMode=False)
+            
             # Restart listening in normal mode
             self.start_listening()
 
     def toggle_conversation_mode(self):
         """Conversation Mode disables wake word for continuous chat."""
-        self.conversation_mode = self.conversation_mode_switch.get()
+        # Toggle the state
+        self.conversation_mode = not self.conversation_mode
         
         if self.conversation_mode:
             # Can't enable if gaming mode is on
             if self.gaming_mode:
                 self.log("⚠️  Cannot enable Conversation Mode during Gaming Mode")
                 logger.warning("Attempted to enable conversation mode during gaming mode")
-                self.conversation_mode_switch.deselect()
                 self.conversation_mode = False
                 return
             
@@ -1270,6 +1360,10 @@ Format your response as a clear, professional code review suitable for documenta
             logger.info("Conversation mode activated - continuous speech detection with VAD")
             self.status_var.set("Status: 💬 Speak freely...")
             
+            # Update dashboard: conversation mode enabled
+            if hasattr(self, 'dashboard'):
+                self.dashboard.push_state(mode="idle", conversationalMode=True)
+            
             # Ensure listening is active
             if not self.is_listening:
                 self.start_listening()
@@ -1278,6 +1372,10 @@ Format your response as a clear, professional code review suitable for documenta
             self.log("   → Back to wake word detection")
             logger.info("Conversation mode deactivated - back to normal wake word mode")
             self.status_var.set("Status: Monitoring...")
+            
+            # Update dashboard: conversation mode disabled
+            if hasattr(self, 'dashboard'):
+                self.dashboard.push_state(mode="idle", conversationalMode=False)
 
     # --- TOOLS: SEARCH, CALENDAR, GMAIL ---
     def google_search(self, query):
@@ -1428,6 +1526,10 @@ Format your response as a clear, professional code review suitable for documenta
             self.status_var.set("Status: Listening...")
             self.log("🎤 Listening for your command...")
             
+            # Update dashboard: listening mode
+            if hasattr(self, 'dashboard'):
+                self.dashboard.push_state(mode="listening")
+            
             # VAD-based audio capture
             speech_frames = []
             is_speaking = False
@@ -1444,7 +1546,8 @@ Format your response as a clear, professional code review suitable for documenta
             max_frames = int(max_listen_time * frames_per_second)
             
             while frames_captured < max_frames:
-                if not self.is_listening or self.gaming_mode:
+                # Don't listen while speaking (avoid transcribing own voice)
+                if not self.is_listening or self.gaming_mode or self.is_speaking:
                     logger.info("Listening interrupted")
                     return None
                 
@@ -1578,7 +1681,8 @@ Format your response as a clear, professional code review suitable for documenta
             max_frames = int(max_listen_time * frames_per_second)
             
             while frames_captured < max_frames:
-                if not self.is_listening or self.gaming_mode or not self.conversation_mode:
+                # Don't listen while speaking (continuous mode too)
+                if not self.is_listening or self.gaming_mode or not self.conversation_mode or self.is_speaking:
                     logger.info("Continuous listening interrupted")
                     return None
                 
@@ -1684,6 +1788,9 @@ Format your response as a clear, professional code review suitable for documenta
         """Remove/replace characters that shouldn't be spoken.
         Cached: reduces repeated text processing on similar inputs.
         """
+        # Replace symbols with their spoken equivalents
+        text = text.replace('°', ' degrees ')  # Degree symbol → "degrees"
+        
         # Replace email-style characters
         text = text.replace('<', '')  # Remove angle brackets
         text = text.replace('>', '')
@@ -1710,8 +1817,7 @@ Format your response as a clear, professional code review suitable for documenta
         Uses a lock to prevent concurrent audio playback (speaking over self).
         """
         with self.speak_lock:  # Serialize all speech generation
-            # Log what Jarvis is saying for debugging transcript
-            self.log(f"🤖 Jarvis: {text}")
+            # Log happens in process_conversation to avoid duplicate entries
             
             if not self.piper_available:
                 logger.warning("Piper TTS not available - cannot speak response")
@@ -1749,6 +1855,10 @@ Format your response as a clear, professional code review suitable for documenta
                     self.is_speaking = True
                     self.interrupt_requested = False
                     self.start_vad_monitor()
+                    
+                    # Update dashboard: speaking mode
+                    if hasattr(self, 'dashboard'):
+                        self.dashboard.push_state(mode="speaking")
                     
                     # Play the audio file using Windows - check for interruptions
                     self.current_tts_process = subprocess.Popen(
@@ -1805,6 +1915,10 @@ Format your response as a clear, professional code review suitable for documenta
                 self.is_speaking = False
                 self.stop_vad_monitor()
                 self.current_tts_process = None
+                
+                # Update dashboard: back to idle
+                if hasattr(self, 'dashboard'):
+                    self.dashboard.push_state(mode="idle")
     def process_conversation(self, raw_text):
         logger.debug(f"Processing conversation: {raw_text}")
         self.log(f"User: {raw_text}")
@@ -1846,16 +1960,43 @@ Components: {', '.join(dogzilla.get('components', []))}"""
             logger.debug("Intent: Weather Search")
             search_query = f"weather in {LOCATION_OVERRIDE} today"
             context = self.google_search(search_query)
+            
+            # Push weather context to dashboard
+            if hasattr(self, 'dashboard') and context:
+                focus_content = f"Weather in {LOCATION_OVERRIDE}:\n\n{context[:300]}"
+                self.dashboard.push_focus(
+                    content_type="docs",
+                    title="Weather Search",
+                    content=focus_content
+                )
         elif "search" in text_lower or "who is" in text_lower or "what is" in text_lower or "find" in text_lower or "google" in text_lower:
             self.status_var.set("Status: Searching Google...")
             logger.debug("Intent: Google Search")
             cleaned_query = clean_search_query(raw_text)
             logger.debug(f"Cleaned query: '{cleaned_query}' from '{raw_text}'")
             context = self.google_search(cleaned_query)
+            
+            # Push search context to dashboard
+            if hasattr(self, 'dashboard') and context:
+                focus_content = f"Search Query: {cleaned_query}\n\nResults:\n{context[:300]}"
+                self.dashboard.push_focus(
+                    content_type="docs",
+                    title="Web Search - " + cleaned_query[:30],
+                    content=focus_content
+                )
         elif "calendar" in text_lower or "schedule" in text_lower:
             self.status_var.set("Status: Checking Calendar...")
             logger.debug("Intent: Calendar")
             context = self.get_calendar()
+            
+            # Push calendar context to dashboard
+            if hasattr(self, 'dashboard') and context:
+                focus_content = f"Calendar Events:\n\n{context[:300]}"
+                self.dashboard.push_focus(
+                    content_type="docs",
+                    title="Calendar Events",
+                    content=focus_content
+                )
         
         # REPORT RETRIEVAL - Get last optimization report from memory
         elif (("open" in text_lower or "show" in text_lower or "read" in text_lower or "summarize" in text_lower or "summary" in text_lower) and 
@@ -1926,6 +2067,7 @@ RESPONSE GUIDELINES:
 - Use vault tools (list_vault_projects, read_project_file, search_vault) when asked about projects
 - Natural, conversational tone suitable for voice delivery
 - When discussing code, use clear Markdown formatting for readability
+- Do not append status footers (location/brain/ready) unless explicitly asked
 """
         else:
             # Normal conversation with context and memory
@@ -1959,6 +2101,7 @@ RESPONSE GUIDELINES:
 - Use vault tools (list_vault_projects, read_project_file, search_vault) when asked about projects
 - Keep responses suitable for voice delivery
 - When discussing code, use clear Markdown formatting for readability on 4-screen setup
+- Do not append status footers (location/brain/ready) unless explicitly asked
 """
         
         self.status_var.set("Status: Thinking...")
@@ -1968,6 +2111,15 @@ RESPONSE GUIDELINES:
             answer = response.json().get('response', "I encountered an error thinking.")
             self.log(f"Jarvis: {answer}")
             self.speak_with_piper(answer)
+            
+            # Push conversation context to dashboard focus window
+            if hasattr(self, 'dashboard'):
+                focus_content = f"User: {raw_text[:120]}\n\nJarvis: {answer[:260]}"
+                self.dashboard.push_focus(
+                    content_type="docs" if context else "docs",
+                    title="Latest Conversation",
+                    content=focus_content
+                )
             
             # Update short-term context buffer with this exchange
             self.add_to_context("User", raw_text)
@@ -2165,6 +2317,10 @@ RESPONSE GUIDELINES:
                         logger.info(f"Wake word detected (index: {keyword_index}) after {detection_attempts} frames")
                         detection_attempts = 0
                         
+                        # Update dashboard: switch to listening mode
+                        if hasattr(self, 'dashboard'):
+                            self.dashboard.push_state(mode="listening")
+                        
                         # Audio handshake - play pre-generated "Yes?" audio
                         self.play_yes_audio()
                         
@@ -2275,11 +2431,11 @@ RESPONSE GUIDELINES:
                 logger.error(f"Email webhook error: {e}")
                 return {"error": str(e)}, 400
         
-        # Start Flask in background thread
-        flask_thread = threading.Thread(target=lambda: self.flask_app.run(host='127.0.0.1', port=5000, debug=False), daemon=True)
+        # Start Flask in background thread (port 5001 to avoid conflict with dashboard on 5000)
+        flask_thread = threading.Thread(target=lambda: self.flask_app.run(host='127.0.0.1', port=5001, debug=False), daemon=True)
         flask_thread.start()
-        logger.info("✓ n8n webhook listener started on http://127.0.0.1:5000/jarvis/notify")
-        logger.info("✓ Email webhook listener started on http://127.0.0.1:5000/speak")
+        logger.info("✓ n8n webhook listener started on http://127.0.0.1:5001/jarvis/notify")
+        logger.info("✓ Email webhook listener started on http://127.0.0.1:5001/speak")
 
 if __name__ == "__main__":
     # Check for required credential files before starting
@@ -2305,11 +2461,17 @@ if __name__ == "__main__":
     
     try:
         app = JarvisGT2()
-        logger.info("Starting main loop...")
-        app.mainloop()
-    except KeyboardInterrupt:
-        logger.info("Keyboard interrupt received")
-        print("\n\nShutting down gracefully...")
+        logger.info("Starting Jarvis (headless mode)...")
+        
+        # Keep application alive - dashboard handles UI by connecting to ws://localhost:5000
+        # Dashboard should be running: npm run dev in GUI/Cyber-Grid-Dashboard
+        logger.info("Jarvis running. Press Ctrl+C to stop.")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("Keyboard interrupt received")
+            print("\n\nShutting down gracefully...")
     except Exception as e:
         logger.error(f"Unexpected error in main: {e}", exc_info=True)
         print(f"\nError: {e}")
