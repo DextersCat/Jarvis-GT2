@@ -1301,10 +1301,39 @@ RESPONSE GUIDELINES:
                 logger.error(f"Webhook error: {e}")
                 return jsonify({"error": str(e)}), 400
         
+        @self.flask_app.route('/speak', methods=['POST'])
+        def receive_speak():
+            """Email notification endpoint (compatible with jarvis_main.py)."""
+            try:
+                data = request.get_json(force=True)
+                sender = data.get("sender", "Unknown")
+                subject = data.get("subject", "No Subject")
+                email_id = data.get("id")
+                
+                # Format as n8n notification for consistent handling
+                notification = {
+                    "message": f"Sir, you have a new email from {sender} regarding {subject}.",
+                    "priority": "high",
+                    "source": "Email",
+                    "metadata": {
+                        "sender": sender,
+                        "subject": subject,
+                        "id": email_id
+                    }
+                }
+                
+                logger.info(f"Received email notification: {sender} - {subject}")
+                self.handle_n8n_webhook(notification)
+                return {"status": "success"}, 200
+            except Exception as e:
+                logger.error(f"Email webhook error: {e}")
+                return {"error": str(e)}, 400
+        
         # Start Flask in background thread
         flask_thread = threading.Thread(target=lambda: self.flask_app.run(host='127.0.0.1', port=5000, debug=False), daemon=True)
         flask_thread.start()
         logger.info("✓ n8n webhook listener started on http://127.0.0.1:5000/jarvis/notify")
+        logger.info("✓ Email webhook listener started on http://127.0.0.1:5000/speak")
 
 if __name__ == "__main__":
     # Check for required credential files before starting
