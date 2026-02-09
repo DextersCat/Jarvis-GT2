@@ -7,6 +7,7 @@ import os
 import json
 import whisper
 import requests
+import functools
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import os.path
@@ -1664,8 +1665,12 @@ Format your response as a clear, professional code review suitable for documenta
             logger.error(f"Continuous listening error: {e}", exc_info=True)
             return None
 
-    def extract_sender_name(self, sender_str):
-        """Extract just the name from 'Name <email@domain>' format for speech."""
+    @staticmethod
+    @functools.lru_cache(maxsize=256)
+    def extract_sender_name(sender_str):
+        """Extract just the name from 'Name <email@domain>' format for speech.
+        Cached: reduces repeated parsing of sender strings.
+        """
         if '<' in sender_str and '>' in sender_str:
             # Extract name part: "John Doe <john@example.com>" -> "John Doe"
             name = sender_str.split('<')[0].strip()
@@ -1673,8 +1678,12 @@ Format your response as a clear, professional code review suitable for documenta
         # Remove @ and replace with 'at' for readability
         return sender_str.replace('@', ' at ').replace('<', '').replace('>', '')
     
-    def sanitize_for_speech(self, text):
-        """Remove/replace characters that shouldn't be spoken."""
+    @staticmethod
+    @functools.lru_cache(maxsize=512)
+    def sanitize_for_speech(text):
+        """Remove/replace characters that shouldn't be spoken.
+        Cached: reduces repeated text processing on similar inputs.
+        """
         # Replace email-style characters
         text = text.replace('<', '')  # Remove angle brackets
         text = text.replace('>', '')
