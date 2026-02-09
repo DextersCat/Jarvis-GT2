@@ -7,6 +7,8 @@ A sophisticated voice assistant with wake word detection, speech-to-text, text-t
 - 🎤 **Wake Word Detection** - "Jarvis" activation using Porcupine
 - 🗣️ **Speech-to-Text** - Whisper AI for accurate transcription
 - 🔊 **Text-to-Speech** - Piper TTS with custom voice model
+- 🛑 **Barge-In Support** - Interrupt Jarvis mid-speech by talking
+- 🎙️ **VAD-Based Listening** - Adaptive recording with configurable silence detection
 - 🧠 **AI Brain** - Ollama LLM integration (llama3.1:8b)
 - 🔍 **Google Integration** - Search, Calendar, Docs, Gmail
 - 💬 **Conversation Mode** - Continuous listening with VAD
@@ -87,9 +89,25 @@ Edit `config.json` with your credentials:
   "google_cse_api_key": "YOUR_CSE_API_KEY",
   "google_cse_cx": "YOUR_CSE_CX",
   "brain_url": "http://localhost:11434/api/generate",
-  "llm_model": "llama3.1:8b"
+  "llm_model": "llama3.1:8b",
+  "vad_settings": {
+    "energy_threshold": 500,
+    "silence_duration": 1.2,
+    "min_speech_duration": 0.5,
+    "barge_in_enabled": true,
+    "barge_in_threshold": 800
+  }
 }
 ```
+
+#### VAD Settings
+
+- **energy_threshold**: Energy level to detect speech start (default: 500)
+- **silence_duration**: Seconds of silence to end speech detection (default: 1.2)
+  - Increase if painkillers affect speech pace
+- **min_speech_duration**: Minimum speech duration to process (default: 0.5s)
+- **barge_in_enabled**: Enable interrupting Jarvis mid-speech (default: true)
+- **barge_in_threshold**: Energy level to trigger barge-in (default: 800)
 
 ## Usage
 
@@ -117,6 +135,19 @@ Double-click `stop_jarvis.bat` or press `Ctrl+C` in the terminal.
 - "Jarvis, what's on my calendar?"
 - "Jarvis, tell me about Dogzilla" (project memory recall)
 - "Jarvis, who are you?" (self-knowledge from memory)
+
+### Barge-In Feature
+
+**Interrupt Jarvis anytime** by simply speaking while he's talking:
+- Jarvis monitors the microphone even while speaking
+- If you start talking (energy > barge_in_threshold), he stops immediately
+- Responds with "Listening, Sir" and waits for your new command
+- Fully configurable via `vad_settings` in config.json
+
+This is especially useful for:
+- Correcting misunderstood commands
+- Stopping long responses
+- Low-friction, natural conversation flow
 
 ## Master Profile System
 

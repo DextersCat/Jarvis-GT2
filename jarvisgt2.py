@@ -103,6 +103,15 @@ try:
     OWNER_EMAIL = config.get("owner_email")
     BRAIN_URL = config.get("brain_url", "http://localhost:11434/api/generate")
     LLM_MODEL = config.get("llm_model", "llama3.1:8b")
+    
+    # VAD Settings for barge-in and adaptive listening
+    VAD_SETTINGS = config.get("vad_settings", {
+        "energy_threshold": 500,
+        "silence_duration": 1.2,
+        "min_speech_duration": 0.5,
+        "barge_in_enabled": True,
+        "barge_in_threshold": 800
+    })
 except FileNotFoundError:
     print("ERROR: config.json not found!")
     print("Please copy config.template.json to config.json and fill in your credentials.")
@@ -154,10 +163,19 @@ class JarvisGT2(ctk.CTk):
         self.last_break_time = time.time()
         self.memory = self.load_memory()
         
-        # VAD parameters for conversation mode
-        self.vad_threshold = 500  # Energy threshold for speech detection
-        self.silence_duration = 1.5  # Seconds of silence to end speech
-        self.min_speech_duration = 0.5  # Minimum seconds of speech
+        # VAD parameters - loaded from config
+        self.vad_threshold = VAD_SETTINGS.get("energy_threshold", 500)
+        self.silence_duration = VAD_SETTINGS.get("silence_duration", 1.2)
+        self.min_speech_duration = VAD_SETTINGS.get("min_speech_duration", 0.5)
+        self.barge_in_enabled = VAD_SETTINGS.get("barge_in_enabled", True)
+        self.barge_in_threshold = VAD_SETTINGS.get("barge_in_threshold", 800)
+        
+        # Barge-in control flags
+        self.is_speaking = False
+        self.interrupt_requested = False
+        self.vad_monitor_thread = None
+        self.vad_monitor_active = False
+        self.current_tts_process = None
         
         logger.info("Jarvis GT2 initializing...")
 
@@ -318,6 +336,68 @@ class JarvisGT2(ctk.CTk):
             self.last_break_time = time.time()
             return True
         return False
+    
+    def start_vad_monitor(self):
+        """Start VAD monitor thread for barge-in detection."""
+        if not self.barge_in_enabled or self.vad_monitor_active:
+            return
+        
+        logger.info("Starting VAD monitor for barge-in detection...")
+        self.vad_monitor_active = True
+        self.vad_monitor_thread = threading.Thread(target=self.vad_monitor_loop, daemon=True)
+        self.vad_monitor_thread.start()
+        logger.debug("VAD monitor thread started")
+    
+    def stop_vad_monitor(self):
+        """Stop VAD monitor thread."""
+        if not self.vad_monitor_active:
+            return
+        
+        logger.info("Stopping VAD monitor...")
+        self.vad_monitor_active = False
+        if self.vad_monitor_thread:
+            self.vad_monitor_thread.join(timeout=1.0)
+            self.vad_monitor_thread = None
+        logger.debug("VAD monitor stopped")
+    
+    def vad_monitor_loop(self):
+        """Monitor microphone for speech while Jarvis is speaking (barge-in detection)."""
+        logger.info("VAD monitor loop active")
+        
+        try:
+            while self.vad_monitor_active:
+                # Only monitor when Jarvis is speaking
+                if not self.is_speaking:
+                    time.sleep(0.05)
+                    continue
+                
+                # Check if we have recorder available
+                if self.recorder is None or self.porcupine is None:
+                    time.sleep(0.05)
+                    continue
+                
+                try:
+                    # Read audio frame (non-blocking)
+                    pcm = self.recorder.read()
+                    
+                    # Calculate energy
+                    energy = self.detect_speech_energy(pcm)
+                    
+                    # If energy exceeds barge-in threshold while speaking
+                    if energy > self.barge_in_threshold:
+                        logger.warning(f"BARGE-IN detected! Energy: {energy:.0f} (threshold: {self.barge_in_threshold})")
+                        self.interrupt_requested = True
+                        # Brief pause to let interruption take effect
+                        time.sleep(0.1)
+                        
+                except Exception as e:
+                    logger.error(f"VAD monitor frame error: {e}")
+                    time.sleep(0.05)
+                    
+        except Exception as e:
+            logger.error(f"VAD monitor loop error: {e}", exc_info=True)
+        finally:
+            logger.info("VAD monitor loop terminated")
     
     def handle_n8n_webhook(self, notification):
         """Process notifications from n8n workflow."""
@@ -508,40 +588,88 @@ class JarvisGT2(ctk.CTk):
         except Exception as e:
             logger.error(f"Beep fallback failed: {e}")
     
-    def listen_and_transcribe(self, duration=5):
-        """Capture audio and transcribe with Whisper."""
+    def listen_and_transcribe(self, duration=None):
+        """Capture audio with VAD and transcribe with Whisper (duration parameter kept for compatibility but ignored)."""
         if self.recorder is None:
             logger.error("Recorder not available for transcription")
             return None
         
         try:
-            logger.info(f"Listening for {duration} seconds...")
-            self.status_var.set(f"Status: Listening for {duration}s...")
-            self.log(f"🎤 Listening for your command ({duration}s)...")
+            logger.info("Listening with VAD (waiting for speech)...")
+            self.status_var.set("Status: Listening...")
+            self.log("🎤 Listening for your command...")
             
-            # Capture audio frames
-            audio_frames = []
-            frames_to_capture = int(duration * self.porcupine.sample_rate / self.porcupine.frame_length)
+            # VAD-based audio capture
+            speech_frames = []
+            is_speaking = False
+            silence_counter = 0
+            speech_counter = 0
             
-            for i in range(frames_to_capture):
+            frames_per_second = self.porcupine.sample_rate / self.porcupine.frame_length
+            silence_frames = int(self.silence_duration * frames_per_second)
+            min_speech_frames = int(self.min_speech_duration * frames_per_second)
+            
+            # Maximum listening time (safety limit)
+            max_listen_time = 30
+            frames_captured = 0
+            max_frames = int(max_listen_time * frames_per_second)
+            
+            while frames_captured < max_frames:
                 if not self.is_listening or self.gaming_mode:
                     logger.info("Listening interrupted")
                     return None
-                    
-                pcm = self.recorder.read()
-                audio_frames.extend(pcm)
                 
-                # Update progress
-                if i % 25 == 0:  # Update every ~0.5 seconds
-                    elapsed = (i * self.porcupine.frame_length) / self.porcupine.sample_rate
-                    remaining = duration - elapsed
-                    self.status_var.set(f"Status: Listening ({remaining:.1f}s left)...")
+                pcm = self.recorder.read()
+                frames_captured += 1
+                
+                # Calculate speech energy
+                energy = self.detect_speech_energy(pcm)
+                
+                if energy > self.vad_threshold:
+                    # Speech detected
+                    if not is_speaking:
+                        logger.debug(f"Speech started (energy: {energy:.0f})")
+                        self.status_var.set("Status: 🎤 Recording...")
+                        is_speaking = True
+                        speech_counter = 0
+                    
+                    speech_frames.extend(pcm)
+                    speech_counter += 1
+                    silence_counter = 0
+                    
+                    # Update progress
+                    if speech_counter % 25 == 0:
+                        elapsed = (speech_counter * self.porcupine.frame_length) / self.porcupine.sample_rate
+                        self.status_var.set(f"Status: Recording ({elapsed:.1f}s)...")
+                    
+                elif is_speaking:
+                    # Silence during speech
+                    silence_counter += 1
+                    speech_frames.extend(pcm)
+                    
+                    if silence_counter >= silence_frames:
+                        # End of speech detected
+                        if speech_counter >= min_speech_frames:
+                            logger.info(f"Speech ended (captured {speech_counter} frames, {silence_counter} silence frames)")
+                            break
+                        else:
+                            # Too short, reset
+                            logger.debug("Speech too short, resetting")
+                            is_speaking = False
+                            speech_frames = []
+                            silence_counter = 0
+                            speech_counter = 0
+                            self.status_var.set("Status: Listening...")
             
-            logger.info(f"Captured {len(audio_frames)} samples")
+            if not speech_frames or speech_counter < min_speech_frames:
+                logger.warning("No valid speech detected")
+                self.log("⚠️  No speech detected")
+                return None
+            
+            logger.info(f"Captured {len(speech_frames)} audio samples via VAD")
             
             # Convert to numpy array and normalize
-            audio_data = np.array(audio_frames, dtype=np.int16)
-            audio_float = audio_data.astype(np.float32) / 32768.0
+            audio_data = np.array(speech_frames, dtype=np.int16)
             
             # Save to temporary WAV file for Whisper
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav:
@@ -573,7 +701,7 @@ class JarvisGT2(ctk.CTk):
                 logger.info(f"Transcribed: {text}")
                 return text
             else:
-                logger.warning("No speech detected")
+                logger.warning("No speech detected in transcription")
                 self.log("⚠️  No speech detected")
                 return None
                 
@@ -709,7 +837,7 @@ class JarvisGT2(ctk.CTk):
             return None
 
     def speak_with_piper(self, text):
-        """Use Piper TTS to speak longer responses."""
+        """Use Piper TTS to speak longer responses (with barge-in support)."""
         if not self.piper_available:
             logger.warning("Piper TTS not available - cannot speak response")
             self.log(f"🔇 TTS unavailable: {text}")
@@ -743,14 +871,43 @@ class JarvisGT2(ctk.CTk):
             )
             
             if result.returncode == 0:
-                # Play the audio file using Windows - no timeout, play until end
-                subprocess.run(
+                # Set speaking flag and start VAD monitor for barge-in
+                self.is_speaking = True
+                self.interrupt_requested = False
+                self.start_vad_monitor()
+                
+                # Play the audio file using Windows - check for interruptions
+                self.current_tts_process = subprocess.Popen(
                     ["powershell", "-c", f"(New-Object Media.SoundPlayer '{temp_path}').PlaySync();"],
-                    capture_output=True
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
                 )
-                logger.debug("Audio played successfully")
-                # Echo fix: Wait for speaker to settle before resuming listening
-                time.sleep(0.8)
+                
+                # Monitor for barge-in while playing
+                while self.current_tts_process.poll() is None:
+                    if self.interrupt_requested:
+                        logger.warning("Barge-in: Stopping speech immediately")
+                        self.current_tts_process.kill()
+                        self.log("🛑 Interrupted - Listening, Sir")
+                        break
+                    time.sleep(0.05)
+                
+                # Clean up
+                self.is_speaking = False
+                self.stop_vad_monitor()
+                self.current_tts_process = None
+                
+                # If interrupted, skip the echo fix delay
+                if not self.interrupt_requested:
+                    logger.debug("Audio played successfully")
+                    # Echo fix: Wait for speaker to settle before resuming listening
+                    time.sleep(0.8)
+                else:
+                    # Reset interrupt flag for next speak
+                    self.interrupt_requested = False
+                    # Brief pause before listening again
+                    time.sleep(0.2)
+                    
             else:
                 logger.warning(f"Piper returned error code {result.returncode}")
                 logger.debug(f"Piper stderr: {result.stderr.decode()}")
@@ -765,6 +922,11 @@ class JarvisGT2(ctk.CTk):
         except Exception as e:
             self.log(f"Piper TTS Error: {e}")
             logger.error(f"Piper TTS failed: {e}", exc_info=True)
+        finally:
+            # Ensure flags are reset
+            self.is_speaking = False
+            self.stop_vad_monitor()
+            self.current_tts_process = None
 
     # --- THE BRAIN ---
     def process_conversation(self, raw_text):
@@ -923,6 +1085,22 @@ RESPONSE GUIDELINES:
         """Safely cleanup audio resources to prevent device lock."""
         logger.debug("Starting audio resource cleanup")
         try:
+            # Stop VAD monitor thread first
+            self.stop_vad_monitor()
+            
+            # Kill any active TTS process
+            if self.current_tts_process:
+                try:
+                    self.current_tts_process.kill()
+                    logger.debug("TTS process killed")
+                except:
+                    pass
+                self.current_tts_process = None
+            
+            # Reset speaking flag
+            self.is_speaking = False
+            
+            # Clean up recorder
             if self.recorder is not None:
                 try:
                     if hasattr(self.recorder, 'stop'):
@@ -938,6 +1116,7 @@ RESPONSE GUIDELINES:
                 self.recorder = None
                 self.log("✓ Recorder cleaned up")
             
+            # Clean up porcupine
             if self.porcupine is not None:
                 try:
                     self.porcupine.delete()
@@ -1060,8 +1239,8 @@ RESPONSE GUIDELINES:
                         # Wait a moment for audio to finish
                         time.sleep(0.5)
                         
-                        # Capture and transcribe user's command
-                        transcribed_text = self.listen_and_transcribe(duration=5)
+                        # Capture and transcribe user's command (VAD-based)
+                        transcribed_text = self.listen_and_transcribe()
                         
                         if transcribed_text:
                             # Process the conversation
