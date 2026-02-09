@@ -16,7 +16,7 @@
     "energy_threshold": 500,
     "silence_duration": 1.2,
     "min_speech_duration": 0.5,
-    "barge_in_enabled": true,
+    "barge_in_enabled": false,
     "barge_in_threshold": 1500,
     "barge_in_delay": 1.0
   }
