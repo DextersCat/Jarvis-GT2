@@ -179,6 +179,12 @@ class JarvisGT2(ctk.CTk):
         self.vad_monitor_active = False
         self.current_tts_process = None
         
+        # Project Vault Configuration
+        self.vault_root = r'C:\Users\spencer\Documents\Projects'
+        self.active_project = 'New_Jarvis'  # Default project
+        self.available_projects = []  # Will be populated on first scan
+        self.scan_vault_projects()  # Initialize project list
+        
         logger.info("Jarvis GT2 initializing...")
 
         # GUI Layout
@@ -337,6 +343,168 @@ class JarvisGT2(ctk.CTk):
             logger.info(f"Health check: {elapsed_time:.0f} minutes since last break")
             self.last_break_time = time.time()
             return True
+        return False
+    
+    # ===== PROJECT VAULT SYSTEM =====
+    def scan_vault_projects(self):
+        """Scan vault root and discover all available projects."""
+        try:
+            self.available_projects = []
+            if os.path.isdir(self.vault_root):
+                for item in os.listdir(self.vault_root):
+                    item_path = os.path.join(self.vault_root, item)
+                    if os.path.isdir(item_path):
+                        self.available_projects.append(item)
+                logger.info(f"✓ Vault scan complete: {len(self.available_projects)} projects found")
+                logger.debug(f"Projects: {', '.join(self.available_projects)}")
+            else:
+                logger.error(f"Vault root not found: {self.vault_root}")
+        except Exception as e:
+            logger.error(f"Vault scan failed: {e}")
+    
+    def list_vault_projects(self):
+        """Return formatted list of all projects in vault (read-only)."""
+        try:
+            self.scan_vault_projects()  # Refresh list
+            if not self.available_projects:
+                return "No projects found in vault."
+            
+            project_list = "Projects in your Vault:\n"
+            for project in sorted(self.available_projects):
+                marker = "[ACTIVE]" if project == self.active_project else ""
+                project_list += f"  • {project} {marker}\n"
+            
+            logger.info(f"Vault projects listed (active: {self.active_project})")
+            return project_list
+        except Exception as e:
+            logger.error(f"Failed to list vault projects: {e}")
+            return f"Error reading vault: {e}"
+    
+    def read_project_file(self, relative_path):
+        """Read a file from the active project (read-only).
+        
+        Args:
+            relative_path: Path relative to active project folder
+            
+        Returns:
+            File contents as string
+        """
+        try:
+            if not self.active_project in self.available_projects:
+                return f"Project '{self.active_project}' not found in vault."
+            
+            full_path = os.path.join(self.vault_root, self.active_project, relative_path)
+            
+            # Security: Prevent directory traversal
+            real_path = os.path.realpath(full_path)
+            vault_base = os.path.realpath(self.vault_root)
+            if not real_path.startswith(vault_base):
+                logger.warning(f"Security: Attempted directory traversal: {full_path}")
+                return "Error: Invalid file path (directory traversal attempted)."
+            
+            if not os.path.exists(real_path):
+                return f"File not found: {relative_path}"
+            
+            if not os.path.isfile(real_path):
+                return f"Path is not a file: {relative_path}"
+            
+            # Read file (limiting size to prevent massive outputs)
+            max_size = 100000  # 100KB limit
+            file_size = os.path.getsize(real_path)
+            
+            if file_size > max_size:
+                return f"File too large ({file_size} bytes). Showing first 25KB:\n\n" + open(real_path, 'r', encoding='utf-8', errors='ignore').read()[:25000]
+            
+            with open(real_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            
+            logger.info(f"Vault read: {self.active_project}/{relative_path}")
+            return content
+            
+        except Exception as e:
+            logger.error(f"Failed to read vault file: {e}")
+            return f"Error reading file: {e}"
+    
+    def search_vault(self, query):
+        """Search for keyword recursively across all vault projects (read-only).
+        
+        Args:
+            query: Search term (case-insensitive)
+            
+        Returns:
+            Formatted search results
+        """
+        try:
+            query_lower = query.lower()
+            results = {}
+            files_searched = 0
+            
+            for project in self.available_projects:
+                project_path = os.path.join(self.vault_root, project)
+                
+                for root, dirs, files in os.walk(project_path):
+                    # Skip common non-text directories
+                    dirs[:] = [d for d in dirs if d not in ['.git', '__pycache__', 'node_modules', '.venv', 'venv']]
+                    
+                    for file in files:
+                        # Skip binary files
+                        if any(file.endswith(ext) for ext in ['.pyc', '.exe', '.dll', '.so', '.bin']):
+                            continue
+                        
+                        files_searched += 1
+                        file_path = os.path.join(root, file)
+                        
+                        try:
+                            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                content = f.read()
+                                if query_lower in content.lower():
+                                    # Store match with line number
+                                    rel_file = os.path.relpath(file_path, project_path)
+                                    if project not in results:
+                                        results[project] = []
+                                    results[project].append(rel_file)
+                        except:
+                            pass
+            
+            # Format results
+            if not results:
+                return f"No matches found for '{query}' in {files_searched} files searched."
+            
+            output = f"Search Results for '{query}' ({files_searched} files searched):\n\n"
+            for project in sorted(results.keys()):
+                output += f"📁 {project}:\n"
+                for file in sorted(results[project])[:10]:  # Limit to 10 per project
+                    output += f"   • {file}\n"
+                if len(results[project]) > 10:
+                    output += f"   ... and {len(results[project]) - 10} more\n"
+            
+            logger.info(f"Vault search: '{query}' found in {sum(len(v) for v in results.values())} files")
+            return output
+            
+        except Exception as e:
+            logger.error(f"Vault search failed: {e}")
+            return f"Search error: {e}"
+    
+    def detect_and_switch_project(self, text):
+        """Auto-detect if user mentions a project and switch context (case-insensitive).
+        
+        Returns:
+            True if project was switched, False otherwise
+        """
+        try:
+            text_lower = text.lower()
+            
+            for project in self.available_projects:
+                if project.lower() in text_lower:
+                    if project != self.active_project:
+                        old_project = self.active_project
+                        self.active_project = project
+                        logger.info(f"🔀 Project switch: {old_project} → {self.active_project}")
+                        self.log(f"📁 Switched to project: {self.active_project}")
+                        return True
+        except Exception as e:
+            logger.error(f"Project detection failed: {e}")
+        
         return False
     
     def start_vad_monitor(self):
@@ -1011,8 +1179,12 @@ Components: {', '.join(dogzilla.get('components', []))}"""
         communication_style = master_profile.get("communication_style", "")
         health_profile = master_profile.get("health_profile", {})
         
+        # Check for project mention and auto-switch if detected
+        self.detect_and_switch_project(raw_text)
+        
         if context:
             # If we have external data, use it with context and memory
+            vault_path = self.vault_root.replace('\\', '/')
             prompt = f"""
 SYSTEM: You are Jarvis, a helpful voice assistant serving Spencer.
 Location: {LOCATION_OVERRIDE}
@@ -1021,6 +1193,12 @@ SPENCER'S PROFILE:
 - Working Method: {working_method}
 - Communication Style: {communication_style}
 - Health: Manages chronic pain and anxiety
+
+PROJECT VAULT ACCESS:
+- You have access to Spencer's Project Vault at {vault_path}
+- Currently focused on: [{self.active_project}]
+- You can read files and search across projects when asked
+- All file access is read-only for security
 
 FACTS ABOUT YOUR MASTER:
 {memory_facts}
@@ -1036,10 +1214,13 @@ RESPONSE GUIDELINES:
 - Keep responses concise and low-friction (Spencer prefers brevity)
 - Be health-conscious in your language
 - Answer based on the provided data
+- Use vault tools (list_vault_projects, read_project_file, search_vault) when asked about projects
 - Natural, conversational tone suitable for voice delivery
+- When discussing code, use clear Markdown formatting for readability
 """
         else:
             # Normal conversation with context and memory
+            vault_path = self.vault_root.replace('\\', '/')
             prompt = f"""
 SYSTEM: You are Jarvis, a helpful voice assistant speaking to Spencer.
 Location: {LOCATION_OVERRIDE}
@@ -1048,6 +1229,12 @@ SPENCER'S PROFILE:
 - Working Method: {working_method}
 - Communication Style: {communication_style}
 - Health: Manages chronic pain and anxiety
+
+PROJECT VAULT ACCESS:
+- You have access to Spencer's Project Vault at {vault_path}
+- Currently focused on: [{self.active_project}]
+- You can read files and search across projects when asked
+- All file access is read-only for security
 
 FACTS ABOUT YOUR MASTER:
 {memory_facts}
@@ -1060,7 +1247,9 @@ RESPONSE GUIDELINES:
 - Keep responses concise and low-friction (Spencer prefers brevity)
 - Be health-conscious in your language
 - Answer naturally and conversationally
+- Use vault tools (list_vault_projects, read_project_file, search_vault) when asked about projects
 - Keep responses suitable for voice delivery
+- When discussing code, use clear Markdown formatting for readability on 4-screen setup
 """
         
         self.status_var.set("Status: Thinking...")
