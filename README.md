@@ -93,10 +93,22 @@ Edit `config.json` with your credentials:
 
 ## Usage
 
+### Quick Start (Windows)
+
+Double-click `start_jarvis.bat` - automatically handles:
+- Closing any existing instances
+- Activating virtual environment
+- Launching Jarvis GT2
+
+Or manually:
 ```powershell
 .\.venv\Scripts\Activate.ps1
 python jarvisgt2.py
 ```
+
+### Stop Jarvis
+
+Double-click `stop_jarvis.bat` or press `Ctrl+C` in the terminal.
 
 ### Voice Commands
 
