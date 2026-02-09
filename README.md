@@ -107,7 +107,11 @@ Edit `config.json` with your credentials:
   - Increase if painkillers affect speech pace
 - **min_speech_duration**: Minimum speech duration to process (default: 0.5s)
 - **barge_in_enabled**: Enable interrupting Jarvis mid-speech (default: true)
-- **barge_in_threshold**: Energy level to trigger barge-in (default: 800)
+- **barge_in_threshold**: Energy level to trigger barge-in (default: 1500)
+  - Higher values = less sensitive (won't trigger on keyboard noise)
+  - Lower values = more sensitive (easier to interrupt)
+  - Typical speech energy: 1500-3000+
+  - Keyboard/mouse noise: 800-1200
 
 ## Usage
 
