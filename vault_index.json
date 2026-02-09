@@ -1,0 +1,186 @@
+{
+  "created": "2026-02-09T12:52:03.770699",
+  "vault_root": "C:\\Users\\spencer\\Documents\\Projects",
+  "projects": {
+    "Logs": {
+      "path": "C:\\Users\\spencer\\Documents\\Projects\\Logs",
+      "folders": {},
+      "root_files": {}
+    },
+    "New_Jarvis": {
+      "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis",
+      "folders": {},
+      "root_files": {
+        "ANALYSIS.md": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\ANALYSIS.md",
+        "check_dependencies.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\check_dependencies.py",
+        "config.json": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\config.json",
+        "config.template.json": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\config.template.json",
+        "create_vault_index.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\create_vault_index.py",
+        "credentials.json": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\credentials.json",
+        "debug_model.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\debug_model.py",
+        "diagnostic_listener.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\diagnostic_listener.py",
+        "find_mics.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\find_mics.py",
+        "fixed_listener.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\fixed_listener.py",
+        "jarvis-high.onnx.json": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\jarvis-high.onnx.json",
+        "jarvisgt2.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\jarvisgt2.py",
+        "jarvis_ear.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\jarvis_ear.py",
+        "jarvis_main.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\jarvis_main.py",
+        "jarvis_memory.json": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\jarvis_memory.json",
+        "live_test.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\live_test.py",
+        "PIPER_SETUP.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\PIPER_SETUP.py",
+        "QUICKSTART.md": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\QUICKSTART.md",
+        "README.md": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\README.md",
+        "simple_test.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\simple_test.py",
+        "soul_test.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\soul_test.py",
+        "speech_test.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\speech_test.py",
+        "start_jarvis.bat": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\start_jarvis.bat",
+        "stop_jarvis.bat": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\stop_jarvis.bat",
+        "synthetic_test.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\synthetic_test.py",
+        "test_alexa.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\test_alexa.py",
+        "test_all_models.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\test_all_models.py",
+        "test_credentials.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\test_credentials.py",
+        "test_elgato.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\test_elgato.py",
+        "test_stt.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\test_stt.py",
+        "test_tflite.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\test_tflite.py",
+        "test_wake_flow.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\test_wake_flow.py",
+        "test_wake_word.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\test_wake_word.py",
+        "test_yes_audio.py": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\test_yes_audio.py",
+        "token.json": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\token.json"
+      }
+    }
+  },
+  "file_reference_map": {
+    "main": [
+      {
+        "file": "jarvis_main.py",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\jarvis_main.py",
+        "project": "New_Jarvis"
+      }
+    ],
+    "startup": [
+      {
+        "file": "jarvisgt2.py",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\jarvisgt2.py",
+        "project": "New_Jarvis"
+      },
+      {
+        "file": "jarvis_ear.py",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\jarvis_ear.py",
+        "project": "New_Jarvis"
+      },
+      {
+        "file": "jarvis_main.py",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\jarvis_main.py",
+        "project": "New_Jarvis"
+      },
+      {
+        "file": "QUICKSTART.md",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\QUICKSTART.md",
+        "project": "New_Jarvis"
+      },
+      {
+        "file": "start_jarvis.bat",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\start_jarvis.bat",
+        "project": "New_Jarvis"
+      }
+    ],
+    "config": [
+      {
+        "file": "config.json",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\config.json",
+        "project": "New_Jarvis"
+      },
+      {
+        "file": "config.template.json",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\config.template.json",
+        "project": "New_Jarvis"
+      }
+    ],
+    "test": [
+      {
+        "file": "live_test.py",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\live_test.py",
+        "project": "New_Jarvis"
+      },
+      {
+        "file": "simple_test.py",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\simple_test.py",
+        "project": "New_Jarvis"
+      },
+      {
+        "file": "soul_test.py",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\soul_test.py",
+        "project": "New_Jarvis"
+      },
+      {
+        "file": "speech_test.py",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\speech_test.py",
+        "project": "New_Jarvis"
+      },
+      {
+        "file": "synthetic_test.py",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\synthetic_test.py",
+        "project": "New_Jarvis"
+      },
+      {
+        "file": "test_alexa.py",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\test_alexa.py",
+        "project": "New_Jarvis"
+      },
+      {
+        "file": "test_all_models.py",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\test_all_models.py",
+        "project": "New_Jarvis"
+      },
+      {
+        "file": "test_credentials.py",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\test_credentials.py",
+        "project": "New_Jarvis"
+      },
+      {
+        "file": "test_elgato.py",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\test_elgato.py",
+        "project": "New_Jarvis"
+      },
+      {
+        "file": "test_stt.py",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\test_stt.py",
+        "project": "New_Jarvis"
+      },
+      {
+        "file": "test_tflite.py",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\test_tflite.py",
+        "project": "New_Jarvis"
+      },
+      {
+        "file": "test_wake_flow.py",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\test_wake_flow.py",
+        "project": "New_Jarvis"
+      },
+      {
+        "file": "test_wake_word.py",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\test_wake_word.py",
+        "project": "New_Jarvis"
+      },
+      {
+        "file": "test_yes_audio.py",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\test_yes_audio.py",
+        "project": "New_Jarvis"
+      }
+    ],
+    "memory": [
+      {
+        "file": "jarvis_memory.json",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\jarvis_memory.json",
+        "project": "New_Jarvis"
+      }
+    ],
+    "ear": [
+      {
+        "file": "jarvis_ear.py",
+        "path": "C:\\Users\\spencer\\Documents\\Projects\\New_Jarvis\\jarvis_ear.py",
+        "project": "New_Jarvis"
+      }
+    ]
+  }
+}

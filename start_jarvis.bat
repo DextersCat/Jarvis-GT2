@@ -4,28 +4,20 @@ REM Closes any running instances and starts fresh
 REM This version can run from anywhere (Desktop, Start Menu, etc.)
 
 REM Set the project directory (absolute path)
-set JARVIS_DIR=C:\Users\spencer\Documents\Projects\New_Jarvis\Ear
+set JARVIS_DIR=C:\Users\spencer\Documents\Projects\New_Jarvis
 
 echo ========================================
 echo Starting Jarvis GT2...
 echo ========================================
 echo.
 
-REM Kill any existing Python processes running jarvisgt2.py
+REM Kill any existing Python processes running Jarvis
 echo Checking for existing Jarvis instances...
-tasklist /FI "IMAGENAME eq python.exe" 2>NUL | find /I /N "python.exe">NUL
-if "%ERRORLEVEL%"=="0" (
-    echo Found running Python processes - stopping Jarvis instances...
-    
-    REM Kill all Python processes that might be running Jarvis
-    powershell -Command "Get-Process python -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -like '*jarvisgt2.py*'} | Stop-Process -Force"
-    
-    REM Wait a moment for cleanup
-    timeout /t 2 /nobreak >NUL
-    echo Cleanup complete.
-) else (
-    echo No existing instances found.
-)
+powershell -Command "Get-Process python,pythonw -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -match 'jarvis_main.py|jarvis_ear.py|jarvis_main_legacy.py'} | Stop-Process -Force"
+
+REM Wait a moment for cleanup
+timeout /t 2 /nobreak >NUL
+echo Cleanup complete.
 
 echo.
 echo ========================================
@@ -62,8 +54,19 @@ if not exist "%JARVIS_DIR%\.venv\Scripts\activate.bat" (
     exit /b 1
 )
 
+REM Check that requirements.txt exists
+if not exist "%JARVIS_DIR%\requirements.txt" (
+    echo ERROR: requirements.txt not found!
+    echo Please create requirements.txt before starting Jarvis.
+    pause
+    exit /b 1
+)
+
 REM Activate virtual environment and run Jarvis
 call "%JARVIS_DIR%\.venv\Scripts\activate.bat"
+
+REM Run dependency check
+python "%JARVIS_DIR%\check_dependencies.py"
 
 echo.
 echo ========================================
@@ -72,7 +75,7 @@ echo ========================================
 echo.
 
 REM Run Jarvis GT2
-python "%JARVIS_DIR%\jarvisgt2.py"
+python "%JARVIS_DIR%\jarvis_main.py"
 
 REM If Jarvis exits, deactivate venv
 call "%JARVIS_DIR%\.venv\Scripts\deactivate.bat"

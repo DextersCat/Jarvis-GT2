@@ -7,10 +7,21 @@ jarvis-high.onnx.json
 venv/
 env/
 
-# Credentials (keep private)
+# Credentials and secrets (keep private)
 credentials.json
 token.json
 config.json
+config.json.archive
+test_credentials.py
+*.key
+*.pem
+.env
+.env.local
+.env.*.local
+
+# JSON files with potential secrets (exclude all except templates)
+# !config.template.json
+# Keep only template files for reference
 
 # Generated audio
 yes.wav
@@ -32,4 +43,5 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+*.swo
 *.swo
