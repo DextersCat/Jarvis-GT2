@@ -867,43 +867,58 @@ Keep it brief and actionable."""
     
     def handle_email_summary_request(self):
         """
-        Summarize recent emails received through n8n workflow.
-        Pulls from notification history and generates AI summary.
+        Summarize recent emails from Gmail (or n8n notification queue as fallback).
+        Prioritizes: Gmail API (most recent) > n8n queue (automated flow)
         """
         try:
-            # Check if we have recent email notifications
-            email_notifications = []
+            # Try Gmail API first (most current)
+            logger.info("Fetching recent emails from Gmail...")
+            gmail_emails = self.get_recent_emails(limit=5)
             
-            # Look for emails in the notification queue
-            if self.notification_queue:
+            if gmail_emails:
+                # Use Gmail emails
+                self.log(f"📧 Found {len(gmail_emails)} recent email(s) in Gmail")
+                
+                # Format for LLM summarization
+                email_text = "RECENT EMAILS FROM GMAIL:\n"
+                for i, email in enumerate(gmail_emails, 1):
+                    email_text += f"{i}. From: {email['sender']}\n"
+                    email_text += f"   Subject: {email['subject']}\n"
+                    email_text += f"   Preview: {email['snippet'][:150]}\n\n"
+            else:
+                # Fallback to n8n notification queue
+                logger.info("No Gmail emails found, checking n8n queue...")
+                
                 email_notifications = [
                     n for n in self.notification_queue 
                     if n.get('source') == 'Email'
                 ]
-            
-            if not email_notifications:
-                self.log("❌ No recent emails found")
-                self.speak_with_piper("You don't have any recent emails in the queue.")
-                return
-            
-            # Format emails for LLM summarization
-            email_text = "RECENT EMAILS:\n"
-            for i, email in enumerate(email_notifications[-5:], 1):  # Last 5 emails
-                metadata = email.get('metadata', {})
-                email_text += f"{i}. From: {metadata.get('sender', 'Unknown')}\n"
-                email_text += f"   Subject: {metadata.get('subject', 'No Subject')}\n"
-                email_text += f"   {email.get('message', '')}\n\n"
-            
-            self.log(f"📧 Found {len(email_notifications)} email(s)")
-            self.log("🧠 Generating summary...")
-            self.speak_with_piper("Summarizing your emails now.")
+                
+                if not email_notifications:
+                    self.log("❌ No recent emails found")
+                    self.speak_with_piper("You don't have any recent emails.")
+                    return
+                
+                # Format n8n notification emails
+                email_text = "RECENT EMAILS FROM NOTIFICATIONS:\n"
+                for i, email in enumerate(email_notifications[-5:], 1):  # Last 5
+                    metadata = email.get('metadata', {})
+                    email_text += f"{i}. From: {metadata.get('sender', 'Unknown')}\n"
+                    email_text += f"   Subject: {metadata.get('subject', 'No Subject')}\n"
+                    email_text += f"   {email.get('message', '')}\n\n"
+                
+                self.log(f"📧 Found {len(email_notifications)} email(s) in queue")
             
             # Send to brain for summarization
-            summary_prompt = f"""Provide a brief executive summary of these emails in 2-3 sentences:
+            self.log("🧠 Generating AI summary...")
+            self.speak_with_piper("Summarizing your emails now.")
+            
+            summary_prompt = f"""Provide a brief executive summary of these emails in 2-3 sentences.
+Focus on important senders and key topics.
 
 {email_text}
 
-Keep it concise and highlight the most important senders/topics. Focus on action items if any."""
+Summary (concise, action-item focused):"""
             
             response = requests.post(
                 BRAIN_URL,
@@ -922,12 +937,25 @@ Keep it concise and highlight the most important senders/topics. Focus on action
             self.log(summary)
             self.speak_with_piper(f"Here's your email summary: {summary}")
             
+            # Push to dashboard
+            if hasattr(self, 'dashboard') and gmail_emails:
+                focus_content = summary[:300] + "\n\nEmails:\n"
+                for email in gmail_emails[:3]:
+                    focus_content += f"\n• {email['subject']}\n  From: {email['sender'][:50]}"
+                
+                self.dashboard.push_focus(
+                    content_type="email",
+                    title="Email Summary",
+                    content=focus_content
+                )
+            
             # Log email summary action
             self.log_vault_action(
                 action_type="email_summarized",
-                description=f"Summarized {len(email_notifications)} email(s)",
+                description=f"Summarized recent emails",
                 metadata={
-                    "email_count": len(email_notifications),
+                    "source": "Gmail API" if gmail_emails else "n8n notifications",
+                    "email_count": len(gmail_emails) if gmail_emails else len(email_notifications),
                     "summary_length": len(summary),
                     "timestamp": datetime.now().isoformat()
                 }
@@ -937,6 +965,175 @@ Keep it concise and highlight the most important senders/topics. Focus on action
             logger.error(f"Error summarizing emails: {e}", exc_info=True)
             self.log(f"❌ Error summarizing emails: {e}")
             self.speak_with_piper("I encountered an error summarizing your emails.")
+    
+    def handle_email_search_request(self, user_request):
+        """
+        Search Gmail for emails from a specific person or with subject keywords.
+        
+        Examples:
+        - "Find emails from John"
+        - "Search for emails from john@example.com about the proposal"
+        - "Look for messages from Sarah"
+        """
+        try:
+            text_lower = user_request.lower()
+            
+            # Extract sender name/email from request
+            # Patterns: "from [name/email]", "from: [name/email]", "[name/email]"
+            import re
+            
+            # Try to extract email pattern
+            email_match = re.search(r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', user_request)
+            sender_query = email_match.group(1) if email_match else None
+            
+            # Try to extract name after "from"
+            if not sender_query:
+                from_match = re.search(r'from\s+([a-zA-Z\s]+?)(?:\s+about|\s+regarding|\s+subject|$)', user_request, re.IGNORECASE)
+                if from_match:
+                    sender_query = from_match.group(1).strip()
+            
+            if not sender_query:
+                self.log("❌ Could not identify who to search for")
+                self.speak_with_piper("Could you please specify whose emails you'd like me to search for?")
+                return
+            
+            # Build Gmail search query
+            gmail_query = f"from:{sender_query}"
+            
+            # Check for subject keywords too
+            subject_match = re.search(r'(?:about|regarding|subject:)\s+([a-zA-Z\s]+?)(?:$|\s+before|\s+since)', user_request, re.IGNORECASE)
+            if subject_match:
+                subject = subject_match.group(1).strip()
+                gmail_query += f" subject:{subject}"
+            
+            logger.info(f"Gmail search query: {gmail_query}")
+            self.log(f"🔍 Searching Gmail for: {sender_query}")
+            self.status_var.set("Status: Searching Gmail...")
+            
+            # Perform Gmail search
+            emails = self.search_emails(gmail_query)
+            
+            if not emails:
+                self.log(f"❌ No emails found from {sender_query}")
+                self.speak_with_piper(f"I didn't find any emails from {sender_query}.")
+                return
+            
+            # Format results for display and speaking
+            self.log(f"✓ Found {len(emails)} email(s)")
+            
+            # Prepare summary for user
+            if len(emails) == 1:
+                email = emails[0]
+                summary = f"Found 1 email from {self.extract_sender_name(email['sender'])} with subject: {email['subject']}"
+                self.log(f"📧 From: {email['sender']}")
+                self.log(f"   Subject: {email['subject']}")
+                self.log(f"   Preview: {email['snippet'][:100]}")
+            else:
+                summary = f"Found {len(emails)} emails from {sender_query}:"
+                for i, email in enumerate(emails[:3], 1):  # Show top 3
+                    self.log(f"{i}. {email['subject']} - {self.extract_sender_name(email['sender'])}")
+            
+            # Push to dashboard
+            if hasattr(self, 'dashboard'):
+                focus_content = summary[:300]
+                for email in emails[:3]:
+                    focus_content += f"\n\n• {email['subject']}\n  From: {email['sender'][:50]}"
+                
+                self.dashboard.push_focus(
+                    content_type="email",
+                    title=f"Email Search: {sender_query}",
+                    content=focus_content
+                )
+            
+            # Speak results
+            self.speak_with_piper(summary)
+            
+            # Log action
+            self.log_vault_action(
+                action_type="email_searched",
+                description=f"Searched emails from: {sender_query}",
+                metadata={
+                    "search_query": gmail_query,
+                    "results_count": len(emails),
+                    "timestamp": datetime.now().isoformat()
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Error searching emails: {e}", exc_info=True)
+            self.log(f"❌ Email search failed: {e}")
+            self.speak_with_piper("I encountered an error searching your emails.")
+    
+    def handle_email_reply_request(self, user_request):
+        """
+        Reply to the most recent email or a specific sender's email.
+        
+        Examples:
+        - "Reply to the last email saying thanks"
+        - "Reply to John saying I'll send it tomorrow"
+        - "Send a reply: I agree with your proposal"
+        """
+        try:
+            text_lower = user_request.lower()
+            
+            # Extract the reply message after common patterns
+            import re
+            
+            reply_match = re.search(r'(?:saying|with|message:?)\s+(.+?)$', user_request, re.IGNORECASE)
+            
+            if not reply_match:
+                self.log("❌ Could not identify reply message")
+                self.speak_with_piper("What would you like me to say in the reply?")
+                return
+            
+            reply_text = reply_match.group(1).strip()
+            
+            # Get recent emails to find which one to reply to
+            logger.info("Fetching recent emails to find reply target...")
+            self.status_var.set("Status: Fetching emails...")
+            
+            recent_emails = self.get_recent_emails(limit=1)
+            
+            if not recent_emails:
+                self.log("❌ No recent emails found to reply to")
+                self.speak_with_piper("You don't have any recent emails to reply to.")
+                return
+            
+            # Get the most recent email
+            email_to_reply = recent_emails[0]
+            email_id = email_to_reply['id']
+            sender = email_to_reply['sender']
+            
+            self.log(f"✉️ Replying to email from {self.extract_sender_name(sender)}")
+            self.log(f"   Message: {reply_text[:100]}")
+            self.status_var.set("Status: Sending reply...")
+            
+            # Send the reply
+            success = self.reply_to_email(email_id, reply_text)
+            
+            if success:
+                confirmation = f"Reply sent to {self.extract_sender_name(sender)}"
+                self.log(f"✓ {confirmation}")
+                self.speak_with_piper(confirmation)
+                
+                # Log action
+                self.log_vault_action(
+                    action_type="email_replied",
+                    description=f"Replied to email from {sender}",
+                    metadata={
+                        "recipient": sender,
+                        "message_preview": reply_text[:100],
+                        "timestamp": datetime.now().isoformat()
+                    }
+                )
+            else:
+                self.log("❌ Failed to send reply")
+                self.speak_with_piper("I had trouble sending that reply.")
+            
+        except Exception as e:
+            logger.error(f"Error replying to email: {e}", exc_info=True)
+            self.log(f"❌ Reply failed: {e}")
+            self.speak_with_piper("I encountered an error sending your reply.")
     
     def handle_optimization_request(self, user_request):
         """
@@ -1519,6 +1716,188 @@ Format your response as a clear, professional code review suitable for documenta
         except Exception as e:
             self.log(f"Docs API Error: {e}")
             return None
+    
+    # --- GMAIL EMAIL TOOLS ---
+    def search_emails(self, query):
+        """Search Gmail for emails matching query (e.g., 'from:john@example.com', 'subject:proposal').
+        
+        Args:
+            query: Gmail search query (supports Gmail operators: from:, subject:, to:, etc.)
+        
+        Returns:
+            List of email dicts with sender, subject, snippet, unique_id
+        """
+        try:
+            creds = get_google_creds()
+            service = build('gmail', 'v1', credentials=creds)
+            
+            # Search for matching emails
+            results = service.users().messages().list(userId='me', q=query, maxResults=5).execute()
+            messages = results.get('messages', [])
+            
+            if not messages:
+                logger.info(f"No emails found for query: {query}")
+                return []
+            
+            # Fetch full email details for each result
+            emails = []
+            for msg in messages:
+                try:
+                    msg_data = service.users().messages().get(userId='me', id=msg['id'], format='full').execute()
+                    headers = msg_data['payload']['headers']
+                    
+                    email_obj = {
+                        'id': msg['id'],
+                        'sender': next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown'),
+                        'subject': next((h['value'] for h in headers if h['name'] == 'Subject'), 'No Subject'),
+                        'snippet': msg_data.get('snippet', '')[:200]  # First 200 chars
+                    }
+                    emails.append(email_obj)
+                except Exception as e:
+                    logger.warning(f"Failed to fetch email details: {e}")
+                    continue
+            
+            logger.info(f"✓ Found {len(emails)} email(s) matching: {query}")
+            return emails
+            
+        except Exception as e:
+            logger.error(f"Email search error: {e}")
+            self.log(f"❌ Email search failed: {e}")
+            return []
+    
+    def get_recent_emails(self, limit=5):
+        """Get the most recent emails from inbox.
+        
+        Args:
+            limit: Number of recent emails to fetch (default 5)
+        
+        Returns:
+            List of email dicts with sender, subject, snippet, unique_id
+        """
+        try:
+            creds = get_google_creds()
+            service = build('gmail', 'v1', credentials=creds)
+            
+            # Get recent emails
+            results = service.users().messages().list(userId='me', maxResults=limit).execute()
+            messages = results.get('messages', [])
+            
+            emails = []
+            for msg in messages:
+                try:
+                    msg_data = service.users().messages().get(userId='me', id=msg['id'], format='full').execute()
+                    headers = msg_data['payload']['headers']
+                    
+                    email_obj = {
+                        'id': msg['id'],
+                        'sender': next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown'),
+                        'subject': next((h['value'] for h in headers if h['name'] == 'Subject'), 'No Subject'),
+                        'snippet': msg_data.get('snippet', '')[:200],
+                        'internal_date': msg_data.get('internalDate', '')
+                    }
+                    emails.append(email_obj)
+                except Exception as e:
+                    logger.warning(f"Failed to fetch email details: {e}")
+                    continue
+            
+            logger.info(f"✓ Retrieved {len(emails)} recent email(s)")
+            return emails
+            
+        except Exception as e:
+            logger.error(f"Failed to get recent emails: {e}")
+            self.log(f"❌ Failed to get recent emails: {e}")
+            return []
+    
+    def send_email(self, to_address, subject, body):
+        """Send an email via Gmail.
+        
+        Args:
+            to_address: Recipient email address
+            subject: Email subject line
+            body: Email body text
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            import base64
+            from email.mime.text import MIMEText
+            
+            creds = get_google_creds()
+            service = build('gmail', 'v1', credentials=creds)
+            
+            # Create message
+            message = MIMEText(body)
+            message['to'] = to_address
+            message['subject'] = subject
+            
+            # Encode to base64
+            raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
+            
+            # Send
+            send_message = {'raw': raw_message}
+            result = service.users().messages().send(userId='me', body=send_message).execute()
+            
+            logger.info(f"✓ Email sent to {to_address}: {subject}")
+            self.log(f"✓ Email sent to {to_address}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Email send error: {e}")
+            self.log(f"❌ Failed to send email: {e}")
+            return False
+    
+    def reply_to_email(self, message_id, reply_text):
+        """Reply to an email thread.
+        
+        Args:
+            message_id: Gmail message ID to reply to
+            reply_text: Reply text body
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            import base64
+            from email.mime.text import MIMEText
+            
+            creds = get_google_creds()
+            service = build('gmail', 'v1', credentials=creds)
+            
+            # Get original message to extract headers
+            original_msg = service.users().messages().get(userId='me', id=message_id, format='full').execute()
+            headers = original_msg['payload']['headers']
+            
+            # Extract original subject and recipients
+            subject = next((h['value'] for h in headers if h['name'] == 'Subject'), 'No Subject')
+            from_email = next((h['value'] for h in headers if h['name'] == 'From'), OWNER_EMAIL)
+            
+            # Ensure Re: prefix
+            if not subject.lower().startswith('re:'):
+                subject = f"Re: {subject}"
+            
+            # Create reply message
+            message = MIMEText(reply_text)
+            message['to'] = from_email
+            message['subject'] = subject
+            message['In-Reply-To'] = original_msg.get('headers', [])[0].get('value', '')
+            
+            # Send as reply
+            raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
+            send_message = {
+                'raw': raw_message,
+                'threadId': original_msg.get('threadId', '')
+            }
+            
+            result = service.users().messages().send(userId='me', body=send_message).execute()
+            logger.info(f"✓ Reply sent to email thread")
+            self.log(f"✓ Reply sent")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Email reply error: {e}")
+            self.log(f"❌ Failed to send reply: {e}")
+            return False
 
     def check_piper_installation(self):
         """Check if Piper TTS is available."""
@@ -2137,6 +2516,22 @@ Components: {', '.join(dogzilla.get('components', []))}"""
             logger.debug("Intent: Email Summary from n8n workflow")
             self.log("📧 Retrieving email summary...")
             self.handle_email_summary_request()
+            return
+        
+        # EMAIL SEARCH HANDLER - Search for emails from specific person
+        elif (("search" in text_lower or "find" in text_lower or "look for" in text_lower) and 
+              ("email" in text_lower or "mail from" in text_lower or "message from" in text_lower)):
+            logger.debug("Intent: Search emails by person")
+            self.log("🔍 Searching emails...")
+            self.handle_email_search_request(raw_text)
+            return
+        
+        # EMAIL REPLY HANDLER - Reply to recent email
+        elif (("reply" in text_lower or "respond" in text_lower or "answer" in text_lower) and 
+              ("email" in text_lower or "mail" in text_lower or ("last" in text_lower and "message" in text_lower))):
+            logger.debug("Intent: Reply to email")
+            self.log("✉️ Preparing email reply...")
+            self.handle_email_reply_request(raw_text)
             return
 
         # --- IMPROVED BRAIN LOGIC WITH CONTEXT AND MEMORY ---
