@@ -523,15 +523,15 @@ class JarvisGT2:
                 self.log("   → Mic disabled, resources freed")
                 logger.info("Gaming mode activated - stopping all listening and freeing resources")
                 self.is_listening = False
-                # Update dashboard
-                self.dashboard.push_state(mode="idle")
+                self.dashboard.push_state(mode="idle", gamingMode=True)
             else:
                 self.log("🎮 Gaming Mode: DISABLED")
                 self.log("   → Resuming normal operation")
                 logger.info("Gaming mode deactivated - resuming normal operation")
+                self.dashboard.push_state(mode="idle", gamingMode=False)
                 self.start_listening()
-                
-        elif key == "muteMic" or key == "muteMic":
+
+        elif key == "muteMic":
             self.mic_muted = value
             if value:
                 self.log("🔇 Microphone: MUTED")
@@ -539,7 +539,8 @@ class JarvisGT2:
             else:
                 self.log("🔊 Microphone: UNMUTED")
                 logger.info("Microphone unmuted - audio input active")
-                
+            self.dashboard.push_state(muteMic=value)
+
         elif key == "conversationalMode":
             self.conversation_mode = value
             if value:
@@ -551,6 +552,7 @@ class JarvisGT2:
                 self.log("💬 Conversation Mode: DISABLED")
                 self.log("   → Now requires wake word")
                 self.conversation_mode = False
+            self.dashboard.push_state(conversationalMode=value)
     
     
     def get_file_content(self, reference_name):
