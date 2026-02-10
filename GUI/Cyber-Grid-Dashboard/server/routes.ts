@@ -38,7 +38,11 @@ export async function registerRoutes(
   let logs: Array<{ id: string; timestamp: string; level: string; message: string }> = [];
   const maxLogs = 50;  // Keep last 50 logs
 
-  let currentFocus: any = null;  // Will receive real focus content from Jarvis
+  let currentFocus: any = {
+    type: "docs",
+    title: "Waiting for input...",
+    content: "Jarvis is listening. Ask a question, request a search, or just start talking."
+  };
 
   wss.on("connection", (ws) => {
     // Send initial state to new client
@@ -74,6 +78,9 @@ export async function registerRoutes(
           broadcast(wss, msg, ws);
         } else if (msg.type === "focus" && msg.data) {
           currentFocus = msg.data;
+          broadcast(wss, msg, ws);
+        } else if (msg.command === "health_update") {
+          // Forward health updates (pain/anxiety) to Jarvis
           broadcast(wss, msg, ws);
         } else if (msg.command === "toggle" && msg.key) {
           // Handle UI control toggles

@@ -5,6 +5,7 @@ import { SidebarControls } from "@/components/sidebar-controls";
 import { SystemGauges } from "@/components/system-gauges";
 import { FocusWindow } from "@/components/focus-window";
 import { TerminalLog } from "@/components/terminal-log";
+import { MoodTracker } from "@/components/mood-tracker";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { useCallback } from "react";
 
@@ -14,6 +15,14 @@ export default function Dashboard() {
   const handleToggle = useCallback(
     (key: string, value: boolean) => {
       sendCommand("toggle", { key, value });
+    },
+    [sendCommand]
+  );
+
+  const handleHealthLog = useCallback(
+    (painLevel: number, anxietyLevel: number) => {
+      sendCommand("health_update", { type: "pain", level: painLevel });
+      sendCommand("health_update", { type: "anxiety", level: anxietyLevel });
     },
     [sendCommand]
   );
@@ -80,8 +89,13 @@ export default function Dashboard() {
               <FocusWindow content={data.focusContent} />
             </div>
 
-            <div className="h-[320px] shrink-0">
-              <TerminalLog logs={data.logs} />
+            <div className="h-[320px] shrink-0 flex flex-col xl:flex-row gap-4">
+              <div className="flex-1 min-w-0">
+                <TerminalLog logs={data.logs} />
+              </div>
+              <div className="w-full xl:w-[320px]">
+                <MoodTracker onLog={handleHealthLog} />
+              </div>
             </div>
           </main>
         </div>

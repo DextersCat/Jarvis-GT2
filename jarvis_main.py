@@ -417,6 +417,30 @@ class JarvisGT2:
             "level": level,
             "level_name": level_name
         }
+
+        # Persist to health log file
+        health_dir = os.path.join(os.path.dirname(__file__), "health")
+        os.makedirs(health_dir, exist_ok=True)
+        health_log_path = os.path.join(health_dir, "health_log.jsonl")
+        health_snapshot_path = os.path.join(health_dir, "health_snapshot.json")
+        try:
+            with open(health_log_path, "a", encoding="utf-8") as log_file:
+                log_file.write(json.dumps(health_record) + "\n")
+
+            snapshot = {}
+            if os.path.exists(health_snapshot_path):
+                with open(health_snapshot_path, "r", encoding="utf-8") as snapshot_file:
+                    snapshot = json.load(snapshot_file) or {}
+
+            snapshot[metric_type] = {
+                "level": level,
+                "level_name": level_name,
+                "timestamp": health_record["timestamp"]
+            }
+            with open(health_snapshot_path, "w", encoding="utf-8") as snapshot_file:
+                json.dump(snapshot, snapshot_file, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to write health log: {e}")
         
         # Store in memory
         if "health_logs" not in self.memory:

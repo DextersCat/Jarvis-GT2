@@ -4,7 +4,7 @@ import { useState } from "react";
 import type { FocusContent } from "@/hooks/use-websocket";
 
 interface FocusWindowProps {
-  content: FocusContent;
+  content: FocusContent | null;
 }
 
 const typeConfig = {
@@ -56,7 +56,12 @@ function SyntaxHighlight({ code }: { code: string }) {
 
 export function FocusWindow({ content }: FocusWindowProps) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const config = typeConfig[content.type];
+  const resolvedContent: FocusContent = content ?? {
+    type: "docs",
+    title: "Waiting for input...",
+    content: "Jarvis is listening. Ask a question, request a search, or just start talking.",
+  };
+  const config = typeConfig[resolvedContent.type];
   const Icon = config.icon;
 
   return (
@@ -88,7 +93,7 @@ export function FocusWindow({ content }: FocusWindowProps) {
             {config.label}
           </span>
           <span className="text-[10px] font-mono text-muted-foreground/40">
-            / {content.title}
+            / {resolvedContent.title}
           </span>
         </div>
         <button
@@ -105,16 +110,16 @@ export function FocusWindow({ content }: FocusWindowProps) {
       </div>
 
       <div className="flex-1 overflow-auto p-4 custom-scrollbar" data-testid="focus-window-content">
-        {content.type === "code" ? (
-          <SyntaxHighlight code={content.content} />
-        ) : content.type === "email" ? (
+        {resolvedContent.type === "code" ? (
+          <SyntaxHighlight code={resolvedContent.content} />
+        ) : resolvedContent.type === "email" ? (
           <div className="space-y-3">
-            <div className="text-sm text-foreground/90">{content.content}</div>
+            <div className="text-sm text-foreground/90">{resolvedContent.content}</div>
           </div>
         ) : (
           <div className="prose prose-sm prose-invert max-w-none">
             <div className="text-sm text-foreground/80 leading-relaxed whitespace-pre-wrap">
-              {content.content}
+              {resolvedContent.content}
             </div>
           </div>
         )}
