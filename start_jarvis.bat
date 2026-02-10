@@ -13,15 +13,16 @@ echo ========================================
 echo.
 
 REM Kill any existing Python processes running Jarvis
+REM (Uses CimInstance for reliable CommandLine access on PowerShell 5.1 and 7+)
 echo Checking for existing Jarvis instances...
-powershell -Command "Get-Process python,pythonw -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -match 'jarvis_main.py|jarvis_ear.py|jarvis_main_legacy.py'} | Stop-Process -Force"
+powershell -Command "Get-CimInstance Win32_Process -Filter \"Name='python.exe' OR Name='pythonw.exe'\" | Where-Object {$_.CommandLine -match 'jarvis_main.py|jarvis_ear.py|jarvis_main_legacy.py'} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; Write-Host 'Killed python PID' $_.ProcessId }"
 
 REM Kill any existing Node processes for n8n or dashboard
 echo Checking for existing n8n/dashboard instances...
-powershell -Command "Get-Process node -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -match 'n8n|server/index.ts|Cyber-Grid-Dashboard|vite|tsx'} | Stop-Process -Force"
+powershell -Command "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object {$_.CommandLine -match 'n8n|server/index.ts|Cyber-Grid-Dashboard|vite|tsx'} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; Write-Host 'Killed node PID' $_.ProcessId }"
 
-REM Wait a moment for cleanup
-timeout /t 2 /nobreak >NUL
+REM Wait for processes to fully terminate (5s gives Node.js time to exit cleanly)
+timeout /t 5 /nobreak >NUL
 echo Cleanup complete.
 
 echo.

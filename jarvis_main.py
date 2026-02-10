@@ -24,8 +24,9 @@ import shutil
 import wave
 import numpy as np
 import collections
+import re
 from flask import Flask, request, jsonify
-from datetime import datetime
+from datetime import datetime, timedelta
 from vault_reference import VaultReference
 from memory_index import MemoryIndex
 from dashboard_bridge import DashboardBridge
@@ -174,13 +175,45 @@ BRAIN_URL = config_dict["brain_url"]
 LLM_MODEL = config_dict["llm_model"]
 VAD_SETTINGS = config_dict["vad_settings"]
 
-# Configure logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='[%(asctime)s] %(levelname)s: %(message)s',
-    datefmt='%H:%M:%S'
-)
+# Configure logging — console at INFO, rotating file at DEBUG
+from logging.handlers import RotatingFileHandler as _RotatingFileHandler
+
+_log_fmt = logging.Formatter('[%(asctime)s] %(levelname)s %(name)s: %(message)s', datefmt='%H:%M:%S')
+
+_console_handler = logging.StreamHandler()
+_console_handler.setLevel(logging.INFO)
+_console_handler.setFormatter(_log_fmt)
+
+_file_handler = _RotatingFileHandler(
+    'jarvis.log', maxBytes=5 * 1024 * 1024, backupCount=3, encoding='utf-8')
+_file_handler.setLevel(logging.DEBUG)
+_file_handler.setFormatter(_log_fmt)
+
+logging.root.setLevel(logging.DEBUG)
+logging.root.addHandler(_console_handler)
+logging.root.addHandler(_file_handler)
+
 logger = logging.getLogger(__name__)
+
+# Topic anchor nouns — used by memory deduplication to identify a fact's subject.
+# Two facts sharing ≥1 anchor noun are treated as being about the same topic.
+_MEMORY_ANCHORS: frozenset = frozenset({
+    'car', 'vehicle', 'van', 'truck', 'bike', 'motorcycle', 'scooter', 'transport',
+    'job', 'work', 'role', 'company', 'employer', 'career', 'profession', 'salary',
+    'occupation', 'business', 'office', 'client',
+    'home', 'address', 'location', 'house', 'flat', 'apartment', 'town', 'city',
+    'country', 'street', 'postcode', 'moved',
+    'dog', 'cat', 'pet', 'fish', 'bird', 'animal', 'rabbit', 'hamster',
+    'wife', 'husband', 'partner', 'girlfriend', 'boyfriend', 'spouse',
+    'family', 'children', 'kids', 'son', 'daughter', 'parents', 'brother', 'sister',
+    'health', 'pain', 'anxiety', 'medication', 'condition', 'illness',
+    'depression', 'stress', 'therapy', 'diagnosis',
+    'hobby', 'hobbies', 'passion', 'interest', 'sport', 'music', 'gaming',
+    'phone', 'email', 'number', 'contact',
+    'diet', 'food', 'eating', 'vegan', 'vegetarian',
+    'drink', 'alcohol', 'coffee', 'tea',
+    'sleep', 'routine', 'schedule', 'habit',
+})
 
 class JarvisGT2:
     def __init__(self):
@@ -227,6 +260,18 @@ class JarvisGT2:
         
         # Audio synchronization (prevent speaking over self)
         self.speak_lock = threading.Lock()
+
+        # Pending email reply (awaiting confirmation before send)
+        self.pending_reply = None  # {email_id, sender, sender_name, reply_text}
+
+        # Intent context tracking (for conversational follow-ups)
+        self.last_intent = None  # "email", "calendar", "task", "search", "optimization"
+        self.last_calendar_events = []  # [{index, id, summary, start, start_dt}, ...]
+        self.last_email_context = None  # Last email referenced in conversation
+        self.pending_calendar_title = None  # Partial calendar entry awaiting time
+
+        # Task / Reminder system
+        self.tasks = []  # Populated after memory loads below
 
         # Health tracking for proactive interventions
         self.interaction_count = 0
@@ -277,6 +322,13 @@ class JarvisGT2:
         # Initialize n8n webhook listener for priority notifications
         self.setup_n8n_webhook()
         
+        # Load tasks from persistent memory (must be after self.memory is loaded)
+        self.tasks = self.memory.get("tasks", [])
+
+        # Start reminder scheduler background thread
+        self.reminder_thread = threading.Thread(target=self.reminder_scheduler_loop, daemon=True)
+        self.reminder_thread.start()
+
         # Auto-start listening for wake word (Normal Mode)
         self.start_listening()
 
@@ -885,9 +937,11 @@ Keep it brief and actionable."""
             gmail_emails = self.get_recent_emails(limit=5)
             
             if gmail_emails:
-                # Use Gmail emails
+                # Store most recent for follow-up actions (archive/delete)
+                self.last_email_context = gmail_emails[0]
+                self.last_intent = "email"
                 self.log(f"📧 Found {len(gmail_emails)} recent email(s) in Gmail")
-                
+
                 # Format for LLM summarization
                 email_text = "RECENT EMAILS FROM GMAIL:\n"
                 for i, email in enumerate(gmail_emails, 1):
@@ -1036,6 +1090,10 @@ Summary (concise, action-item focused):"""
             # Format results for display and speaking
             self.log(f"✓ Found {len(emails)} email(s)")
             
+            # Store most recent for follow-up actions (archive/delete/reply)
+            self.last_email_context = emails[0]
+            self.last_intent = "email"
+
             # Prepare summary for user
             if len(emails) == 1:
                 email = emails[0]
@@ -1119,31 +1177,31 @@ Summary (concise, action-item focused):"""
             email_id = email_to_reply['id']
             sender = email_to_reply['sender']
             
-            self.log(f"✉️ Replying to email from {self.extract_sender_name(sender)}")
+            sender_name = self.extract_sender_name(sender)
+            self.log(f"✉️ Reply pending confirmation — to {sender_name}")
             self.log(f"   Message: {reply_text[:100]}")
-            self.status_var.set("Status: Sending reply...")
-            
-            # Send the reply
-            success = self.reply_to_email(email_id, reply_text)
-            
-            if success:
-                confirmation = f"Reply sent to {self.extract_sender_name(sender)}"
-                self.log(f"✓ {confirmation}")
-                self.speak_with_piper(confirmation)
-                
-                # Log action
-                self.log_vault_action(
-                    action_type="email_replied",
-                    description=f"Replied to email from {sender}",
-                    metadata={
-                        "recipient": sender,
-                        "message_preview": reply_text[:100],
-                        "timestamp": datetime.now().isoformat()
-                    }
-                )
-            else:
-                self.log("❌ Failed to send reply")
-                self.speak_with_piper("I had trouble sending that reply.")
+
+            # Store as pending — do NOT send yet
+            self.pending_reply = {
+                'email_id': email_id,
+                'sender': sender,
+                'sender_name': sender_name,
+                'reply_text': reply_text
+            }
+            self.last_intent = "email"
+
+            # Ask for confirmation
+            confirmation_prompt = f"Shall I send that to {sender_name}?"
+            self.speak_with_piper(confirmation_prompt)
+
+            # Show on dashboard focus window
+            self.dashboard.push_focus(
+                content_type="email",
+                title="Pending Reply — Awaiting Confirmation",
+                content=(f"To: {sender}\n\n"
+                         f"Message:\n{reply_text}\n\n"
+                         f"[Say YES to send or NO to cancel]")
+            )
             
         except Exception as e:
             logger.error(f"Error replying to email: {e}", exc_info=True)
@@ -1329,9 +1387,11 @@ Format your response as a clear, professional code review suitable for documenta
         """Get formatted context history for LLM."""
         if not self.context_buffer:
             return ""
-        history = "CONVERSATION CONTEXT (last exchanges):\n"
+        history = "RECENT CONVERSATION (last exchanges):\n"
         for exchange in self.context_buffer:
-            history += f"  {exchange['role']}: {exchange['message'][:100]}...\n"
+            msg = exchange['message']
+            truncated = (msg[:250] + "...") if len(msg) > 250 else msg
+            history += f"  {exchange['role']}: {truncated}\n"
         return history
     
     def health_intervener(self):
@@ -1344,6 +1404,11 @@ Format your response as a clear, professional code review suitable for documenta
         if elapsed_time > break_interval:
             logger.info(f"Health check: {elapsed_time:.0f} minutes since last break")
             self.last_break_time = time.time()
+            msg = ("Sir, you have been working for over "
+                   f"{int(elapsed_time)} minutes. "
+                   "I recommend a short break when you are ready.")
+            self.log(f"💊 {msg}")
+            self.speak_with_piper(msg)
             return True
         return False
     
@@ -1465,9 +1530,9 @@ Format your response as a clear, professional code review suitable for documenta
                                     if project not in results:
                                         results[project] = []
                                     results[project].append(rel_file)
-                        except:
-                            pass
-            
+                        except Exception as e:
+                            logger.debug("File search skip (%s): %s", file_path, e)
+
             # Format results
             if not results:
                 return f"No matches found for '{query}' in {files_searched} files searched."
@@ -1715,18 +1780,858 @@ Format your response as a clear, professional code review suitable for documenta
         return "\n".join([f"{i['title']}: {i['snippet']}" for i in res.get('items', [])])
 
     def get_calendar(self):
-        """Get calendar events using authenticated Google Calendar API."""
+        """Get upcoming calendar events using Google Calendar API (real data)."""
         try:
             creds = get_google_creds()
             service = build('calendar', 'v3', credentials=creds)
-            # Example: Get next 10 events
-            # events_result = service.events().list(calendarId='primary', maxResults=10).execute()
-            # events = events_result.get('items', [])
-            return "You have a project meeting at 2 PM and a physiotherapy session at 4 PM."
+
+            import datetime as _dt
+            now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+            events_result = service.events().list(
+                calendarId='primary',
+                timeMin=now,
+                maxResults=10,
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
+            events = events_result.get('items', [])
+
+            if not events:
+                self.last_calendar_events = []
+                return "Your calendar is clear — no upcoming events."
+
+            self.last_calendar_events = []
+            lines = []
+            for i, event in enumerate(events, 1):
+                start = event['start'].get('dateTime', event['start'].get('date', ''))
+                try:
+                    if 'T' in start:
+                        dt = datetime.fromisoformat(start.replace('Z', '+00:00'))
+                        time_str = dt.strftime('%A %d %b at %-I:%M %p')
+                    else:
+                        dt = datetime.fromisoformat(start)
+                        time_str = dt.strftime('%A %d %b (all day)')
+                except Exception:
+                    time_str = start
+
+                summary = event.get('summary', 'Untitled event')
+                lines.append(f"{i}. {summary} — {time_str}")
+                self.last_calendar_events.append({
+                    'index': i,
+                    'id': event.get('id'),
+                    'summary': summary,
+                    'start': start,
+                    'start_dt': time_str
+                })
+
+            return "Upcoming events:\n" + "\n".join(lines)
+
         except Exception as e:
             self.log(f"Calendar API Error: {e}")
+            logger.error(f"Calendar error: {e}", exc_info=True)
             return "Error accessing calendar."
     
+    # ===== RELATIVE TIME PARSER =====
+    def parse_relative_datetime(self, time_expr):
+        """Parse relative time expressions into datetime objects.
+
+        Handles: tomorrow [morning/afternoon/evening], this evening, tonight,
+                 after lunch, in X minutes/hours, next week, day names,
+                 later, this afternoon.
+
+        Returns:
+            (start_dt, end_dt) tuple, or (None, None) if no time found.
+        """
+        import re
+        now = datetime.now()
+        text = time_expr.lower().strip()
+
+        # "in X minutes/hours/days"
+        m = re.search(r'in\s+(\d+)\s+(minute|hour|day)s?', text)
+        if m:
+            amount = int(m.group(1))
+            unit = m.group(2)
+            delta = {'minute': timedelta(minutes=amount),
+                     'hour': timedelta(hours=amount),
+                     'day': timedelta(days=amount)}[unit]
+            start_dt = now + delta
+            return start_dt, start_dt + timedelta(hours=1)
+
+        # Day-of-week names
+        day_names = ['monday', 'tuesday', 'wednesday', 'thursday',
+                     'friday', 'saturday', 'sunday']
+        for i, day in enumerate(day_names):
+            if day in text:
+                days_ahead = (i - now.weekday()) % 7 or 7
+                base = (now + timedelta(days=days_ahead)).replace(
+                    second=0, microsecond=0)
+                hour = 9
+                if 'afternoon' in text:
+                    hour = 14
+                elif 'evening' in text:
+                    hour = 19
+                start_dt = base.replace(hour=hour, minute=0)
+                return start_dt, start_dt + timedelta(hours=1)
+
+        # tomorrow
+        if 'tomorrow' in text:
+            base = (now + timedelta(days=1)).replace(second=0, microsecond=0)
+            hour = 9
+            if 'afternoon' in text:
+                hour = 14
+            elif 'evening' in text or 'night' in text:
+                hour = 19
+            start_dt = base.replace(hour=hour, minute=0)
+            return start_dt, start_dt + timedelta(hours=1)
+
+        # this evening / tonight
+        if 'this evening' in text or 'tonight' in text:
+            start_dt = now.replace(hour=19, minute=0, second=0, microsecond=0)
+            if start_dt <= now:
+                start_dt += timedelta(days=1)
+            return start_dt, start_dt + timedelta(hours=1)
+
+        # after lunch
+        if 'after lunch' in text:
+            start_dt = now.replace(hour=13, minute=30, second=0, microsecond=0)
+            if start_dt <= now:
+                start_dt += timedelta(days=1)
+            return start_dt, start_dt + timedelta(hours=1)
+
+        # next week
+        if 'next week' in text:
+            start_dt = (now + timedelta(days=7)).replace(
+                hour=9, minute=0, second=0, microsecond=0)
+            return start_dt, start_dt + timedelta(hours=1)
+
+        # later / this afternoon
+        if 'later' in text or 'this afternoon' in text:
+            if now.hour < 14:
+                start_dt = now.replace(hour=14, minute=0, second=0, microsecond=0)
+            else:
+                start_dt = now + timedelta(hours=2)
+                start_dt = start_dt.replace(second=0, microsecond=0)
+            return start_dt, start_dt + timedelta(hours=1)
+
+        return None, None
+
+    # ===== CALENDAR WRITE METHODS =====
+    def create_calendar_event(self, title, start_dt, end_dt, description=None):
+        """Create a new Google Calendar event."""
+        try:
+            creds = get_google_creds()
+            service = build('calendar', 'v3', credentials=creds)
+            event_body = {
+                'summary': title,
+                'start': {'dateTime': start_dt.isoformat(), 'timeZone': 'Europe/London'},
+                'end':   {'dateTime': end_dt.isoformat(),   'timeZone': 'Europe/London'},
+            }
+            if description:
+                event_body['description'] = description
+            event = service.events().insert(
+                calendarId='primary', body=event_body).execute()
+            logger.info(f"✓ Calendar event created: {title}")
+            return event
+        except Exception as e:
+            logger.error(f"Calendar create error: {e}")
+            return None
+
+    def update_calendar_event(self, event_id, new_start_dt=None,
+                              new_end_dt=None, new_title=None):
+        """Update an existing calendar event."""
+        try:
+            creds = get_google_creds()
+            service = build('calendar', 'v3', credentials=creds)
+            event = service.events().get(
+                calendarId='primary', eventId=event_id).execute()
+            if new_title:
+                event['summary'] = new_title
+            if new_start_dt:
+                event['start'] = {'dateTime': new_start_dt.isoformat(),
+                                  'timeZone': 'Europe/London'}
+            if new_end_dt:
+                event['end'] = {'dateTime': new_end_dt.isoformat(),
+                                'timeZone': 'Europe/London'}
+            updated = service.events().update(
+                calendarId='primary', eventId=event_id, body=event).execute()
+            logger.info(f"✓ Calendar event updated: {event.get('summary')}")
+            return updated
+        except Exception as e:
+            logger.error(f"Calendar update error: {e}")
+            return None
+
+    def delete_calendar_event(self, event_id):
+        """Delete (cancel) a calendar event."""
+        try:
+            creds = get_google_creds()
+            service = build('calendar', 'v3', credentials=creds)
+            service.events().delete(
+                calendarId='primary', eventId=event_id).execute()
+            logger.info(f"✓ Calendar event deleted: {event_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Calendar delete error: {e}")
+            return False
+
+    def handle_calendar_action(self, user_request):
+        """Handle calendar create / move / cancel requests.
+
+        Examples:
+          "Book a call with David tomorrow afternoon"
+          "Move the first one to Thursday"
+          "Cancel my 2pm meeting"
+        """
+        import re
+        text = user_request.lower()
+
+        cancel_words  = ['cancel', 'delete', 'remove']
+        modify_words  = ['move', 'reschedule', 'change', 'update', 'shift']
+
+        def _pick_event_by_index(text):
+            """Return calendar event dict from last_calendar_events by ordinal."""
+            idx_map = {'first': 1, '1st': 1, 'second': 2, '2nd': 2,
+                       'third': 3, '3rd': 3}
+            m = re.search(
+                r'\b(first|1st|second|2nd|third|3rd|\d+)\b', text)
+            if not m:
+                return None
+            raw = m.group(1)
+            idx = idx_map.get(raw) or (int(raw) if raw.isdigit() else None)
+            if idx and 1 <= idx <= len(self.last_calendar_events):
+                return self.last_calendar_events[idx - 1]
+            return None
+
+        # --- CANCEL ---
+        if any(w in text for w in cancel_words):
+            if not self.last_calendar_events:
+                self.speak_with_piper(
+                    "Check your calendar first so I know which event to cancel.")
+                return
+            event = _pick_event_by_index(text)
+            if not event:
+                self.speak_with_piper(
+                    "Which event? Say 'cancel the first one' or similar.")
+                return
+            if self.delete_calendar_event(event['id']):
+                msg = f"Done. I've cancelled {event['summary']}."
+                self.speak_with_piper(msg)
+                self.add_to_context("User", user_request)
+                self.add_to_context("Jarvis", msg)
+                self.last_intent = "calendar"
+                self.log_vault_action(
+                    "calendar_deleted",
+                    f"Cancelled: {event['summary']}")
+                updated = self.get_calendar()
+                self.dashboard.push_focus("docs", "Calendar", updated)
+            else:
+                self.speak_with_piper("I had trouble cancelling that event.")
+            return
+
+        # --- MOVE / RESCHEDULE ---
+        if any(w in text for w in modify_words):
+            if not self.last_calendar_events:
+                self.speak_with_piper(
+                    "Check your calendar first so I know which event to move.")
+                return
+            event = _pick_event_by_index(text)
+            if not event:
+                self.speak_with_piper(
+                    "Which event? Say 'move the first one' or similar.")
+                return
+            start_dt, end_dt = self.parse_relative_datetime(user_request)
+            if not start_dt:
+                self.speak_with_piper(
+                    "When would you like to move it to?")
+                self.last_intent = "calendar"
+                return
+            updated = self.update_calendar_event(
+                event['id'], new_start_dt=start_dt, new_end_dt=end_dt)
+            if updated:
+                new_time = start_dt.strftime('%A %d %b at %I:%M %p').lstrip('0')
+                msg = f"Done. I've moved {event['summary']} to {new_time}."
+                self.speak_with_piper(msg)
+                self.add_to_context("User", user_request)
+                self.add_to_context("Jarvis", msg)
+                self.last_intent = "calendar"
+                self.log_vault_action(
+                    "calendar_updated",
+                    f"Moved {event['summary']} to {new_time}")
+                cal_text = self.get_calendar()
+                self.dashboard.push_focus("docs", "Calendar", cal_text)
+            else:
+                self.speak_with_piper("I had trouble updating that event.")
+            return
+
+        # --- CREATE ---
+        start_dt, end_dt = self.parse_relative_datetime(user_request)
+        # Strip scheduling verbs to isolate the event title
+        raw_title = user_request
+        for phrase in ['book', 'schedule', 'add', 'create', 'set up',
+                       'arrange', 'remind me about', 'remind me to']:
+            raw_title = re.sub(
+                r'\b' + re.escape(phrase) + r'\b', '', raw_title,
+                flags=re.IGNORECASE)
+        # Strip time words from title
+        time_words = [
+            'tomorrow', 'morning', 'afternoon', 'evening', 'tonight',
+            'monday', 'tuesday', 'wednesday', 'thursday', 'friday',
+            'saturday', 'sunday', 'next week', 'after lunch', 'later',
+            r'in \d+ \w+']
+        for w in time_words:
+            raw_title = re.sub(
+                r'\b' + w + r'\b', '', raw_title, flags=re.IGNORECASE)
+        title = re.sub(r'\s+', ' ', raw_title).strip(' ,-') or "New Event"
+
+        if not start_dt:
+            # No time found — ask and remember the title for follow-up
+            self.speak_with_piper("When would you like to schedule that?")
+            self.pending_calendar_title = title
+            self.last_intent = "calendar"
+            return
+
+        event = self.create_calendar_event(title, start_dt, end_dt)
+        if event:
+            new_time = start_dt.strftime('%A %d %b at %I:%M %p').lstrip('0')
+            msg = f"Done. I've booked {title} for {new_time}."
+            self.speak_with_piper(msg)
+            self.add_to_context("User", user_request)
+            self.add_to_context("Jarvis", msg)
+            self.last_intent = "calendar"
+            self.log_vault_action(
+                "calendar_created", f"Created: {title} at {new_time}")
+            cal_text = self.get_calendar()
+            self.dashboard.push_focus("docs", "Calendar", cal_text)
+        else:
+            self.speak_with_piper("I had trouble creating that event.")
+
+    # ===== EMAIL ARCHIVE / TRASH =====
+    def archive_email(self, message_id):
+        """Archive an email (remove from INBOX label)."""
+        try:
+            creds = get_google_creds()
+            service = build('gmail', 'v1', credentials=creds)
+            service.users().messages().modify(
+                userId='me',
+                id=message_id,
+                body={'removeLabelIds': ['INBOX']}
+            ).execute()
+            logger.info(f"✓ Email archived: {message_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Email archive error: {e}")
+            return False
+
+    def trash_email(self, message_id):
+        """Move an email to trash."""
+        try:
+            creds = get_google_creds()
+            service = build('gmail', 'v1', credentials=creds)
+            service.users().messages().trash(
+                userId='me', id=message_id).execute()
+            logger.info(f"✓ Email trashed: {message_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Email trash error: {e}")
+            return False
+
+    def handle_email_management_request(self, user_request):
+        """Handle archive / delete / mark-handled requests.
+
+        Examples:
+          "Mark that handled"
+          "Archive that email"
+          "Delete the last email"
+        """
+        text = user_request.lower()
+
+        # Use last email in context, else fetch the most recent
+        target = self.last_email_context
+        if not target:
+            recent = self.get_recent_emails(limit=1)
+            if recent:
+                target = recent[0]
+
+        if not target:
+            self.speak_with_piper(
+                "I don't have an email in context. "
+                "Try summarizing or searching your emails first.")
+            return
+
+        email_id = target.get('id')
+        sender_name = self.extract_sender_name(target.get('sender', 'that sender'))
+
+        if any(w in text for w in ['trash', 'delete', 'bin']):
+            if self.trash_email(email_id):
+                msg = f"Done. Email from {sender_name} moved to trash."
+                self.speak_with_piper(msg)
+                self.add_to_context("User", user_request)
+                self.add_to_context("Jarvis", msg)
+                self.last_intent = "email"
+                self.log_vault_action(
+                    "email_trashed", f"Trashed email from {sender_name}")
+            else:
+                self.speak_with_piper("I had trouble deleting that email.")
+        else:
+            # archive / mark handled
+            if self.archive_email(email_id):
+                msg = f"Done. Email from {sender_name} archived."
+                self.speak_with_piper(msg)
+                self.add_to_context("User", user_request)
+                self.add_to_context("Jarvis", msg)
+                self.last_intent = "email"
+                self.log_vault_action(
+                    "email_archived", f"Archived email from {sender_name}")
+            else:
+                self.speak_with_piper("I had trouble archiving that email.")
+
+    # ===== PENDING CONFIRMATION CHECK =====
+    def check_pending_confirmation(self, text):
+        """Check if user is responding to a pending action requiring confirmation.
+
+        Returns True if the input was fully handled (caller should return).
+        """
+        text_lower = text.lower().strip()
+
+        confirm_words = ['yes', 'yeah', 'yep', 'send it', 'send that',
+                         'go ahead', 'do it', 'ok', 'okay', 'confirm',
+                         'correct', 'sure', 'please']
+        deny_words   = ['no', 'nope', 'cancel', "don't", 'dont',
+                        'stop', 'abort', 'wait', 'hold on', 'actually']
+
+        # --- Pending email reply ---
+        if self.pending_reply:
+            if any(w in text_lower for w in confirm_words):
+                rd = self.pending_reply
+                self.pending_reply = None
+                success = self.reply_to_email(rd['email_id'], rd['reply_text'])
+                if success:
+                    msg = f"Reply sent to {rd['sender_name']}."
+                    self.log(f"✓ {msg}")
+                    self.speak_with_piper(msg)
+                    self.log_vault_action(
+                        "email_replied",
+                        f"Replied to {rd['sender']}",
+                        metadata={
+                            "recipient": rd['sender'],
+                            "message_preview": rd['reply_text'][:100],
+                            "timestamp": datetime.now().isoformat()
+                        })
+                    self.last_intent = "email"
+                else:
+                    self.speak_with_piper("I had trouble sending that reply.")
+                return True
+
+            if any(w in text_lower for w in deny_words):
+                self.pending_reply = None
+                self.speak_with_piper("Reply cancelled.")
+                self.log("✉️ Reply cancelled by user.")
+                return True
+
+            # Ambiguous — remind user there's a pending action
+            self.speak_with_piper(
+                f"Just to confirm — shall I send that reply to "
+                f"{self.pending_reply['sender_name']}?")
+            return True
+
+        # --- Pending calendar event (waiting for time) ---
+        if self.pending_calendar_title:
+            start_dt, end_dt = self.parse_relative_datetime(text)
+            if start_dt:
+                title = self.pending_calendar_title
+                self.pending_calendar_title = None
+                event = self.create_calendar_event(title, start_dt, end_dt)
+                if event:
+                    new_time = start_dt.strftime(
+                        '%A %d %b at %I:%M %p').lstrip('0')
+                    msg = f"Done. I've booked {title} for {new_time}."
+                    self.speak_with_piper(msg)
+                    self.add_to_context("User", text)
+                    self.add_to_context("Jarvis", msg)
+                    self.last_intent = "calendar"
+                    self.log_vault_action(
+                        "calendar_created", f"Created: {title} at {new_time}")
+                    cal_text = self.get_calendar()
+                    self.dashboard.push_focus("docs", "Calendar", cal_text)
+                else:
+                    self.speak_with_piper("I had trouble creating that event.")
+                return True
+
+            if any(w in text_lower for w in deny_words):
+                self.pending_calendar_title = None
+                self.speak_with_piper("Booking cancelled.")
+                return True
+
+        return False
+
+    # ===== TASK / REMINDER SYSTEM =====
+    def add_task(self, description, remind_at=None):
+        """Add a task to the task list with an optional timed reminder."""
+        task = {
+            'id': int(time.time() * 1000),
+            'description': description,
+            'created': datetime.now().isoformat(),
+            'remind_at': remind_at.isoformat() if remind_at else None,
+            'done': False,
+            'reminded': False
+        }
+        self.tasks.append(task)
+        self.memory['tasks'] = self.tasks
+        self.save_memory()
+        self.log_vault_action(
+            'task_created',
+            f"Task added: {description}",
+            metadata={'task_id': task['id'],
+                      'remind_at': task['remind_at']})
+        return task
+
+    def list_tasks(self, show_done=False):
+        """Return a formatted string of pending (or all) tasks."""
+        items = self.tasks if show_done else [t for t in self.tasks if not t['done']]
+        if not items:
+            return "No pending tasks."
+        lines = []
+        for i, t in enumerate(items, 1):
+            remind_str = ""
+            if t.get('remind_at'):
+                try:
+                    rdt = datetime.fromisoformat(t['remind_at'])
+                    remind_str = f"  [Due: {rdt.strftime('%a %d %b %I:%M %p')}]"
+                except Exception:
+                    pass
+            done_str = " ✓" if t.get('done') else ""
+            lines.append(f"{i}. {t['description']}{remind_str}{done_str}")
+        return "\n".join(lines)
+
+    def mark_task_done(self, query):
+        """Mark a task done by 1-based index or partial description match.
+
+        Returns the task description string if found, else None.
+        """
+        import re
+        active = [t for t in self.tasks if not t['done']]
+        # Numeric index
+        m = re.search(r'\b(\d+)\b', query)
+        if m:
+            idx = int(m.group(1)) - 1
+            if 0 <= idx < len(active):
+                active[idx]['done'] = True
+                self.memory['tasks'] = self.tasks
+                self.save_memory()
+                self.log_vault_action(
+                    'task_completed',
+                    f"Completed: {active[idx]['description']}")
+                return active[idx]['description']
+        # Keyword match
+        q_lower = query.lower()
+        for task in active:
+            words = [w for w in q_lower.split() if len(w) > 3]
+            if words and any(w in task['description'].lower() for w in words):
+                task['done'] = True
+                self.memory['tasks'] = self.tasks
+                self.save_memory()
+                self.log_vault_action(
+                    'task_completed', f"Completed: {task['description']}")
+                return task['description']
+        return None
+
+    def reminder_scheduler_loop(self):
+        """Background thread: fire due reminders every 30 seconds."""
+        while True:
+            try:
+                now = datetime.now()
+                for task in self.tasks:
+                    if task.get('done') or task.get('reminded') or not task.get('remind_at'):
+                        continue
+                    try:
+                        remind_dt = datetime.fromisoformat(task['remind_at'])
+                        seconds_until = (remind_dt - now).total_seconds()
+                        if 0 <= seconds_until < 60:
+                            task['reminded'] = True
+                            task['remind_at'] = None
+                            self.memory['tasks'] = self.tasks
+                            self.save_memory()
+                            msg = f"Sir, reminder: {task['description']}"
+                            self.log(f"⏰ {msg}")
+                            if not self.gaming_mode:
+                                self.speak_with_piper(msg)
+                            else:
+                                self.notification_queue.append({
+                                    'source': 'Reminder',
+                                    'message': msg,
+                                    'timestamp': datetime.now().isoformat(),
+                                    'metadata': {}
+                                })
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.error(f"Reminder scheduler error: {e}")
+            time.sleep(30)
+
+    def handle_task_request(self, user_request):
+        """Handle task / reminder creation, listing, completion, and recall.
+
+        Examples:
+          "Remind me to order dog food"
+          "What's on my list?"
+          "Mark the first task done"
+          "Did I ever order dog food?"
+        """
+        import re
+        text = user_request.lower()
+
+        # --- LIST ---
+        list_words = ["what's on my list", "show my tasks", "what tasks",
+                      "list tasks", "pending tasks", "my reminders",
+                      "show reminders", "what do i need to do",
+                      "what have i got"]
+        if any(w in text for w in list_words):
+            task_text = self.list_tasks()
+            reply = ("Here are your pending tasks:\n" + task_text
+                     if task_text != "No pending tasks."
+                     else "You have no pending tasks.")
+            self.speak_with_piper(reply)
+            self.add_to_context("User", user_request)
+            self.add_to_context("Jarvis", reply)
+            self.last_intent = "task"
+            self.dashboard.push_focus("docs", "Task List", task_text)
+            self.log_vault_action("tasks_listed", "Listed pending tasks")
+            return
+
+        # --- COMPLETE ---
+        complete_words = ['done', 'complete', 'finished', 'mark',
+                          'tick off', 'crossed off', 'check off']
+        if any(w in text for w in complete_words):
+            desc = self.mark_task_done(user_request)
+            if desc:
+                msg = f"Done. I've marked '{desc}' as complete."
+                self.speak_with_piper(msg)
+                self.add_to_context("User", user_request)
+                self.add_to_context("Jarvis", msg)
+                self.last_intent = "task"
+                self.dashboard.push_focus("docs", "Task List", self.list_tasks())
+            else:
+                self.speak_with_piper(
+                    "I couldn't find that task. "
+                    "You can say the number or part of the description.")
+            return
+
+        # --- DID I / HAVE I (memory recall) ---
+        recall_match = re.search(
+            r'\b(?:did|have)\s+(?:i|you|we)\s+(?:ever\s+)?(.+?)(?:\?|$)',
+            text)
+        if recall_match:
+            keyword = recall_match.group(1).strip()
+            done_tasks = [t for t in self.tasks
+                          if t.get('done') and keyword in t['description'].lower()]
+            action_hits = self.memory_index.search_by_keyword(keyword, limit=3)
+            if done_tasks:
+                msg = f"Yes — '{done_tasks[0]['description']}' was marked done."
+            elif action_hits:
+                a = action_hits[0]
+                msg = (f"I logged this: {a.get('description', 'an action')} "
+                       f"on {a.get('timestamp', '')[:10]}.")
+            else:
+                pending = [t for t in self.tasks
+                           if keyword in t['description'].lower()]
+                if pending:
+                    msg = f"It's still on your list: {pending[0]['description']}"
+                else:
+                    msg = "I don't have any record of that, Sir."
+            self.speak_with_piper(msg)
+            self.add_to_context("User", user_request)
+            self.add_to_context("Jarvis", msg)
+            self.last_intent = "task"
+            return
+
+        # --- ADD / CREATE ---
+        task_desc = None
+        # "remind me to X", "remember to X", "don't forget to X"
+        m = re.search(
+            r'(?:remind(?:er)?\s+(?:me\s+)?(?:to\s+)?|remember\s+to\s+|'
+            r'don\'t\s+forget\s+(?:to\s+)?|note\s+(?:to\s+)?(?:self\s+)?)'
+            r'(.+?)(?:\s+(?:in\s+\d|\bat\b|\bon\b|tomorrow|tonight|this|next)|$)',
+            user_request, re.IGNORECASE)
+        if m:
+            task_desc = m.group(1).strip()
+        if not task_desc:
+            # Simpler fallback: everything after "remind me"
+            s = re.search(r'remind(?:er)?\s+(?:me\s+)?(?:to\s+)?(.+)',
+                          user_request, re.IGNORECASE)
+            if s:
+                task_desc = s.group(1).strip()
+        if not task_desc:
+            task_desc = user_request.strip()
+
+        remind_at, _ = self.parse_relative_datetime(user_request)
+        self.add_task(task_desc, remind_at)
+
+        if remind_at:
+            time_str = remind_at.strftime('%A at %I:%M %p').lstrip('0')
+            msg = f"Noted. I'll remind you to {task_desc} on {time_str}."
+        else:
+            msg = f"Added to your list: {task_desc}."
+
+        self.speak_with_piper(msg)
+        self.add_to_context("User", user_request)
+        self.add_to_context("Jarvis", msg)
+        self.last_intent = "task"
+        self.dashboard.push_focus("docs", "Task List", self.list_tasks())
+
+    # ── Long-term memory management ───────────────────────────────────────────
+
+    def _find_superseded_fact(self, new_fact: str) -> int:
+        """Return the index of an existing fact that new_fact supersedes, or -1.
+
+        Uses two passes:
+        1. Anchor-noun match — facts sharing a topic anchor (car, job, health…)
+           are considered to be about the same subject → definite replacement.
+        2. Jaccard word-overlap fallback (threshold ≥ 0.40) — catches cases
+           where the anchor vocabulary doesn't cover the topic.
+        """
+        facts = self.memory.get('facts', [])
+        if not facts:
+            return -1
+
+        stopwords = {
+            'the', 'a', 'an', 'is', 'are', 'was', 'were', 'has', 'have', 'had',
+            'in', 'on', 'at', 'to', 'for', 'of', 'and', 'or', 'but', 'i', 'my',
+            'me', 'he', 'she', 'they', 'it', 'his', 'her', 'its', 'your', 'our',
+            'spencer', 's', 'now', 'new', 'still', 'also', 'just', 'that', 'this',
+        }
+
+        def sig_words(text):
+            return set(re.sub(r'[^\w\s]', '', text.lower()).split()) - stopwords
+
+        new_sig = sig_words(new_fact)
+        new_anchors = new_sig & _MEMORY_ANCHORS
+
+        best_idx, best_score = -1, 0.0
+
+        for idx, fact in enumerate(facts):
+            fact_sig = sig_words(fact)
+            fact_anchors = fact_sig & _MEMORY_ANCHORS
+
+            # Pass 1: shared anchor noun → same subject, replace immediately
+            if new_anchors and fact_anchors and (new_anchors & fact_anchors):
+                logger.debug(
+                    "Memory anchor match: '%s' ↔ '%s' (anchors: %s)",
+                    new_fact[:60], fact[:60], new_anchors & fact_anchors)
+                return idx
+
+            # Pass 2: Jaccard fallback
+            if new_sig and fact_sig:
+                score = len(new_sig & fact_sig) / len(new_sig | fact_sig)
+                if score > best_score:
+                    best_score = score
+                    best_idx = idx
+
+        if best_score >= 0.40:
+            logger.debug(
+                "Memory Jaccard match (%.2f): '%s' ↔ '%s'",
+                best_score, new_fact[:60], facts[best_idx][:60])
+            return best_idx
+
+        return -1
+
+    def replace_or_add_fact(self, new_fact: str, delete: bool = False) -> str:
+        """Update long-term memory with a new or corrected fact.
+
+        Args:
+            new_fact: The fact text to store (or the fact to delete if delete=True).
+            delete:   If True, remove the matching fact instead of replacing it.
+
+        Returns:
+            Human-readable description of what changed.
+        """
+        facts = self.memory.setdefault('facts', [])
+        idx = self._find_superseded_fact(new_fact)
+
+        if delete:
+            if idx >= 0:
+                removed = facts.pop(idx)
+                self.save_memory()
+                logger.info("Memory: deleted fact — %s", removed)
+                return f"Removed: '{removed}'"
+            logger.info("Memory: no matching fact found to delete for: %s", new_fact)
+            return "no_match"
+
+        if idx >= 0:
+            old = facts[idx]
+            facts[idx] = new_fact
+            self.save_memory()
+            logger.info("Memory: replaced\n  OLD: %s\n  NEW: %s", old, new_fact)
+            return f"replaced::{old}"
+        else:
+            facts.append(new_fact)
+            self.save_memory()
+            logger.info("Memory: added new fact — %s", new_fact)
+            return "added"
+
+    def handle_learn_fact(self, user_request: str):
+        """Handle memory update / forget requests.
+
+        Examples:
+            "Remember that I now drive a BMW"
+            "Update your memory: I moved to Maidstone"
+            "Forget that I have a Ford Focus"
+            "That's no longer true — I don't work at Acme anymore"
+        """
+        text_lower = user_request.lower()
+
+        # Detect forget/delete intent
+        is_delete = any(kw in text_lower for kw in [
+            "forget that", "forget i ", "forget my ", "remove from memory",
+            "delete that", "no longer true", "not true anymore",
+            "remove that fact", "that's wrong",
+        ])
+
+        # Extract fact text by stripping command preamble
+        fact_text = user_request
+        preambles = [
+            r'(?:please\s+)?(?:remember|note|update\s+your\s+memory|store|keep\s+in\s+mind)[\s:,]+(?:that\s+)?',
+            r'(?:please\s+)?(?:forget|remove|delete)[\s:,]+(?:that\s+)?',
+            r'(?:update|correction|note)[\s:,]+',
+            r"that'?s\s+(?:no\s+longer\s+true|wrong|not\s+right)[,\s\-]*(?:i\s+)?",
+            r'by\s+the\s+way[,\s]+',
+        ]
+        for pattern in preambles:
+            cleaned = re.sub(pattern, '', fact_text, flags=re.IGNORECASE).strip()
+            if cleaned and cleaned != fact_text:
+                fact_text = cleaned
+                break
+
+        # Capitalise: prepend "Spencer" if it starts with a verb/lowercase pronoun
+        fact_text = fact_text.rstrip('.!?').strip()
+        if fact_text and not fact_text.lower().startswith('spencer') \
+                and not fact_text.lower().startswith('jarvis'):
+            fact_text = 'Spencer ' + fact_text[0].lower() + fact_text[1:]
+
+        result = self.replace_or_add_fact(fact_text, delete=is_delete)
+
+        # Build spoken confirmation
+        if is_delete:
+            if result == "no_match":
+                msg = "I couldn't find a matching memory to remove."
+            else:
+                msg = "Done. I've removed that from my memory."
+        elif result.startswith("replaced::"):
+            msg = "Memory updated. I've replaced the old record with the new one."
+        else:
+            msg = "Got it. I've made a note of that."
+
+        self.speak_with_piper(msg)
+        self.add_to_context("User", user_request)
+        self.add_to_context("Jarvis", msg)
+        self.last_intent = "memory"
+
+        # Show current fact list in focus window
+        facts_display = "\n".join(
+            f"• {f}" for f in self.memory.get('facts', []))
+        self.dashboard.push_focus("docs", "Memory — Known Facts", facts_display)
+        self.log_vault_action(
+            "memory_updated",
+            f"Fact {'deleted' if is_delete else 'learned'}: {fact_text}")
+
     def get_docs_content(self, doc_id):
         """Read Google Docs content using authenticated API."""
         try:
@@ -2138,9 +3043,9 @@ Format your response as a clear, professional code review suitable for documenta
             # Clean up temp file
             try:
                 os.unlink(temp_path)
-            except:
-                pass
-            
+            except OSError as e:
+                logger.debug("Whisper temp cleanup skip: %s", e)
+
             if text:
                 logger.info(f"Transcribed: {text}")
                 return text
@@ -2268,9 +3173,9 @@ Format your response as a clear, professional code review suitable for documenta
             # Clean up
             try:
                 os.unlink(temp_path)
-            except:
-                pass
-            
+            except OSError as e:
+                logger.debug("Whisper continuous temp cleanup skip: %s", e)
+
             if text:
                 logger.info(f"Transcribed (continuous): {text}")
                 return text
@@ -2295,11 +3200,13 @@ Format your response as a clear, professional code review suitable for documenta
         return sender_str.replace('@', ' at ').replace('<', '').replace('>', '')
     
     @staticmethod
-    @functools.lru_cache(maxsize=512)
     def sanitize_for_speech(text):
-        """Remove/replace characters that shouldn't be spoken.
-        Cached: reduces repeated text processing on similar inputs.
-        """
+        """Remove/replace characters that shouldn't be spoken."""
+        # Strip code fences (triple-backtick blocks) — replace entirely with placeholder
+        text = re.sub(r'```[\w]*\n.*?```', 'code block omitted', text, flags=re.DOTALL)
+        # Strip inline code
+        text = re.sub(r'`[^`\n]+`', '', text)
+
         # Replace symbols with their spoken equivalents
         text = text.replace('°', ' degrees ')  # Degree symbol → "degrees"
         
@@ -2416,9 +3323,9 @@ Format your response as a clear, professional code review suitable for documenta
                 # Clean up temp file
                 try:
                     os.unlink(temp_path)
-                except:
-                    pass
-                
+                except OSError as e:
+                    logger.debug("Piper temp cleanup skip: %s", e)
+
             except Exception as e:
                 self.log(f"Piper TTS Error: {e}")
                 logger.error(f"Piper TTS failed: {e}", exc_info=True)
@@ -2431,18 +3338,69 @@ Format your response as a clear, professional code review suitable for documenta
                 # Update dashboard: back to idle
                 if hasattr(self, 'dashboard'):
                     self.dashboard.push_state(mode="idle")
+    def _route_by_context(self, raw_text, text_lower):
+        """Context-aware follow-up routing based on last known intent.
+
+        Returns True if the input was fully handled (caller should return).
+        """
+        if not self.last_intent:
+            return False
+
+        # Email follow-ups — "reply to that" without the word "email"
+        if self.last_intent == "email":
+            if (any(w in text_lower for w in ["reply", "respond", "answer"])
+                    and "email" not in text_lower
+                    and "mail" not in text_lower):
+                self.handle_email_reply_request(raw_text)
+                return True
+            if any(w in text_lower for w in [
+                    "archive", "handled", "bin", "trash",
+                    "delete it", "delete that"]):
+                self.handle_email_management_request(raw_text)
+                return True
+
+        # Calendar follow-ups — "move the first one", "cancel that"
+        if self.last_intent == "calendar":
+            if (any(w in text_lower for w in [
+                    "move", "reschedule", "cancel", "delete",
+                    "first", "second", "third"])
+                    and self.last_calendar_events):
+                self.handle_calendar_action(raw_text)
+                return True
+            # Pending calendar event waiting for a time
+            if self.pending_calendar_title:
+                start_dt, _ = self.parse_relative_datetime(raw_text)
+                if start_dt:
+                    return self.check_pending_confirmation(raw_text)
+
+        # Task follow-ups
+        if self.last_intent == "task":
+            if any(w in text_lower for w in [
+                    "done", "complete", "finished", "mark",
+                    "add another", "remind me"]):
+                self.handle_task_request(raw_text)
+                return True
+
+        return False
+
     def process_conversation(self, raw_text):
         logger.debug(f"Processing conversation: {raw_text}")
         self.log(f"User: {raw_text}")
         context = ""
-
-        # Intent Detection
         text_lower = raw_text.lower()
-        
-        # Clean up search queries - remove command phrases
+
+        # ── STEP 1: Pending confirmations take absolute priority ──────────────
+        if self.check_pending_confirmation(raw_text):
+            return
+
+        # ── STEP 2: Context-aware follow-up routing ───────────────────────────
+        if self._route_by_context(raw_text, text_lower):
+            return
+
+        # ── STEP 3: Primary intent detection ─────────────────────────────────
         def clean_search_query(text):
             remove_phrases = [
-                "search the web for", "search the word for", "search for", 
+                "search the web for", "search the word for", "search for",
                 "google for", "google", "look up", "find out about", "find",
                 "tell me about", "what is", "who is", "what are"
             ]
@@ -2450,257 +3408,318 @@ Format your response as a clear, professional code review suitable for documenta
             for phrase in remove_phrases:
                 cleaned = cleaned.replace(phrase, "")
             return cleaned.strip()
-        
-        # Enhanced Intent Detection: Memory-based queries
-        if "who are you" in text_lower or "what do you know about me" in text_lower or "tell me about yourself" in text_lower:
-            logger.debug("Intent: Self-Knowledge (pulling from memory)")
+
+        # Memory update / learn new fact
+        # Note: "remember to..." → TASK (handled below); "remember that..." → LEARN_FACT
+        if (any(kw in text_lower for kw in [
+                "remember that", "note that", "please note",
+                "update your memory", "update: ", "correction: ",
+                "keep that in mind", "store that", "make a note",
+                "forget that", "forget i ", "forget my ",
+                "no longer true", "not true anymore", "remove from memory",
+        ]) or re.search(r"\bthat'?s\s+(wrong|not right|no longer)", text_lower)):
+            logger.debug("Intent: LEARN_FACT")
+            self.handle_learn_fact(raw_text)
+            self.last_intent = "memory"
+            return
+
+        # Self-knowledge
+        if ("who are you" in text_lower
+                or "what do you know about me" in text_lower
+                or "tell me about yourself" in text_lower):
+            logger.debug("Intent: Self-Knowledge")
             memory_facts = "\n".join(self.memory.get("facts", []))
             context = f"JARVIS MEMORY:\n{memory_facts}"
-        # Dogzilla project queries
+
+        # Project: Dogzilla
         elif "dogzilla" in text_lower:
-            logger.debug("Intent: Dogzilla Project Knowledge")
+            logger.debug("Intent: Dogzilla Project")
             dogzilla = self.memory.get("projects", {}).get("dogzilla", {})
-            context = f"""DOGZILLA PROJECT:
-Name: {dogzilla.get('name', 'Dogzilla')}
-Type: {dogzilla.get('type', 'ESP32-based robotics project')}
-Description: {dogzilla.get('description', 'Mobile robotics platform')}
-Status: {dogzilla.get('status', 'Active Development')}
-Components: {', '.join(dogzilla.get('components', []))}"""
-        # Weather queries - add location automatically
+            context = (f"DOGZILLA PROJECT:\n"
+                       f"Name: {dogzilla.get('name', 'Dogzilla')}\n"
+                       f"Type: {dogzilla.get('type', 'ESP32-based robotics')}\n"
+                       f"Description: {dogzilla.get('description', '')}\n"
+                       f"Status: {dogzilla.get('status', 'Active')}\n"
+                       f"Components: {', '.join(dogzilla.get('components', []))}")
+
+        # Weather
         elif "weather" in text_lower:
             self.status_var.set("Status: Searching Google...")
-            logger.debug("Intent: Weather Search")
-            search_query = f"weather in {LOCATION_OVERRIDE} today"
-            context = self.google_search(search_query)
-            
-            # Push weather context to dashboard
+            logger.debug("Intent: Weather")
+            context = self.google_search(f"weather in {LOCATION_OVERRIDE} today")
             if hasattr(self, 'dashboard') and context:
-                focus_content = f"Weather in {LOCATION_OVERRIDE}:\n\n{context[:300]}"
                 self.dashboard.push_focus(
-                    content_type="docs",
-                    title="Weather Search",
-                    content=focus_content
-                )
-        elif "search" in text_lower or "who is" in text_lower or "what is" in text_lower or "find" in text_lower or "google" in text_lower:
-            self.status_var.set("Status: Searching Google...")
-            logger.debug("Intent: Google Search")
-            cleaned_query = clean_search_query(raw_text)
-            logger.debug(f"Cleaned query: '{cleaned_query}' from '{raw_text}'")
-            context = self.google_search(cleaned_query)
-            
-            # Push search context to dashboard
-            if hasattr(self, 'dashboard') and context:
-                focus_content = f"Search Query: {cleaned_query}\n\nResults:\n{context[:300]}"
-                self.dashboard.push_focus(
-                    content_type="docs",
-                    title="Web Search - " + cleaned_query[:30],
-                    content=focus_content
-                )
-        elif "calendar" in text_lower or "schedule" in text_lower:
+                    "docs", "Weather",
+                    f"Weather in {LOCATION_OVERRIDE}:\n\n{context[:400]}")
+            self.last_intent = "search"
+
+        # Task / Reminder — checked BEFORE generic "find/search" to avoid collision
+        elif (any(w in text_lower for w in [
+                "remind me", "reminder", "add to my list",
+                "don't forget", "note to self", "remember to"])
+              or any(w in text_lower for w in [
+                "what's on my list", "my tasks", "pending tasks",
+                "show tasks", "list tasks",
+                "what do i need to do", "what have i got"])):
+            logger.debug("Intent: Task")
+            self.log("📋 Handling task request...")
+            self.handle_task_request(raw_text)
+            return
+
+        # Memory recall ("did I / have I")
+        elif re.search(r'\b(?:did|have)\s+(?:i|you|we)\s+(?:ever\s+)?\w',
+                       text_lower):
+            logger.debug("Intent: Memory recall")
+            self.handle_task_request(raw_text)
+            return
+
+        # Calendar READ (no write keywords present)
+        elif (any(w in text_lower for w in [
+                "calendar", "what's my day", "my day", "diary",
+                "upcoming", "today's events", "schedule today",
+                "what do i have"])
+              and not any(w in text_lower for w in [
+                "book", "schedule a", "add to calendar",
+                "create event", "move", "reschedule", "cancel"])):
             self.status_var.set("Status: Checking Calendar...")
-            logger.debug("Intent: Calendar")
+            logger.debug("Intent: Calendar Read")
             context = self.get_calendar()
-            
-            # Push calendar context to dashboard
             if hasattr(self, 'dashboard') and context:
-                focus_content = f"Calendar Events:\n\n{context[:300]}"
-                self.dashboard.push_focus(
-                    content_type="docs",
-                    title="Calendar Events",
-                    content=focus_content
-                )
-        
-        # REPORT RETRIEVAL - Get last optimization report from memory
-        elif (("open" in text_lower or "show" in text_lower or "read" in text_lower or "summarize" in text_lower or "summary" in text_lower) and 
-              ("last" in text_lower or "latest" in text_lower or "recent" in text_lower) and 
-              ("report" in text_lower or "optimization" in text_lower or "document" in text_lower)):
-            logger.debug("Intent: Retrieve Last Report from Memory")
+                self.dashboard.push_focus("docs", "Calendar", context)
+            self.last_intent = "calendar"
+
+        # Calendar WRITE (booking, moving, cancelling)
+        elif (any(w in text_lower for w in [
+                "book", "cancel", "reschedule",
+                "move the", "move my", "create an event", "add an event"])
+              or ("schedule" in text_lower and any(
+                  w in text_lower for w in [
+                      "a call", "a meeting", "an appointment",
+                      "with ", "tomorrow", "monday", "tuesday",
+                      "wednesday", "thursday", "friday"]))):
+            logger.debug("Intent: Calendar Action")
+            self.log("📅 Handling calendar action...")
+            self.handle_calendar_action(raw_text)
+            return
+
+        # Report retrieval
+        elif (("open" in text_lower or "show" in text_lower
+               or "read" in text_lower or "summarize" in text_lower
+               or "summary" in text_lower)
+              and ("last" in text_lower or "latest" in text_lower
+                   or "recent" in text_lower)
+              and ("report" in text_lower or "optimization" in text_lower
+                   or "document" in text_lower)):
+            logger.debug("Intent: Retrieve Last Report")
             self.log("📄 Retrieving last optimization report...")
             self.handle_report_retrieval(raw_text)
             return
-        
-        # OPTIMIZATION INTENT HANDLER - Scribe Capabilities (File Analysis)
-        elif (("check" in text_lower and "file" in text_lower and ("write" in text_lower or "doc" in text_lower)) or
-              ("analyze" in text_lower and "file" in text_lower) or
-              ("optimize" in text_lower and "file" in text_lower) or
-              ("check" in text_lower and "main" in text_lower and "write" in text_lower) or
-              ("check" in text_lower and "config" in text_lower and "write" in text_lower)):
-            logger.debug("Intent: Code Optimization Analysis (Scribe Workflow)")
-            self.log("🧠 Starting optimization analysis workflow...")
+
+        # Code Optimization / Scribe
+        elif (("check" in text_lower and "file" in text_lower
+               and ("write" in text_lower or "doc" in text_lower))
+              or ("analyze" in text_lower and "file" in text_lower)
+              or ("optimize" in text_lower and "file" in text_lower)
+              or ("check" in text_lower and "main" in text_lower
+                  and "write" in text_lower)
+              or ("check" in text_lower and "config" in text_lower
+                  and "write" in text_lower)):
+            logger.debug("Intent: Code Optimization (Scribe)")
+            self.log("🧠 Starting optimization workflow...")
             self.handle_optimization_request(raw_text)
-            # After handling optimization request, don't continue to brain
+            self.last_intent = "optimization"
             return
-        
-        # EMAIL SUMMARY HANDLER - Summarize recent emails from n8n workflow
-        elif (("summarize" in text_lower or "summary" in text_lower or "read" in text_lower or "show" in text_lower) and 
-              ("email" in text_lower or "emails" in text_lower or "mail" in text_lower)):
-            logger.debug("Intent: Email Summary from n8n workflow")
+
+        # Email SUMMARY
+        elif (("summarize" in text_lower or "summary" in text_lower
+               or "read" in text_lower or "show" in text_lower)
+              and ("email" in text_lower or "emails" in text_lower
+                   or "mail" in text_lower)):
+            logger.debug("Intent: Email Summary")
             self.log("📧 Retrieving email summary...")
             self.handle_email_summary_request()
+            self.last_intent = "email"
             return
-        
-        # EMAIL SEARCH HANDLER - Search for emails from specific person
-        elif (("search" in text_lower or "find" in text_lower or "look for" in text_lower) and 
-              ("email" in text_lower or "mail from" in text_lower or "message from" in text_lower)):
-            logger.debug("Intent: Search emails by person")
+
+        # Email SEARCH
+        elif (("search" in text_lower or "find" in text_lower
+               or "look for" in text_lower)
+              and ("email" in text_lower or "mail from" in text_lower
+                   or "message from" in text_lower)):
+            logger.debug("Intent: Email Search")
             self.log("🔍 Searching emails...")
             self.handle_email_search_request(raw_text)
+            self.last_intent = "email"
             return
-        
-        # EMAIL REPLY HANDLER - Reply to recent email
-        elif (("reply" in text_lower or "respond" in text_lower or "answer" in text_lower) and 
-              ("email" in text_lower or "mail" in text_lower or ("last" in text_lower and "message" in text_lower))):
-            logger.debug("Intent: Reply to email")
+
+        # Email REPLY
+        elif (("reply" in text_lower or "respond" in text_lower
+               or "answer" in text_lower)
+              and ("email" in text_lower or "mail" in text_lower
+                   or ("last" in text_lower and "message" in text_lower))):
+            logger.debug("Intent: Email Reply")
             self.log("✉️ Preparing email reply...")
             self.handle_email_reply_request(raw_text)
             return
 
-        # --- IMPROVED BRAIN LOGIC WITH CONTEXT AND MEMORY ---
+        # Email MANAGEMENT (archive / delete / mark handled)
+        elif (any(w in text_lower for w in [
+                "archive", "bin it", "bin that", "trash that",
+                "trash it", "delete that email", "delete the email"])
+              or ("mark" in text_lower
+                  and any(w in text_lower for w in ["handled", "done", "read"]))):
+            logger.debug("Intent: Email Management")
+            self.log("🗂️ Managing email...")
+            self.handle_email_management_request(raw_text)
+            return
+
+        # Generic web search (after all specific handlers)
+        elif ("search" in text_lower or "who is" in text_lower
+              or "what is" in text_lower or "find" in text_lower
+              or "google" in text_lower):
+            self.status_var.set("Status: Searching Google...")
+            logger.debug("Intent: Google Search")
+            cleaned_query = clean_search_query(raw_text)
+            logger.debug(f"Cleaned query: '{cleaned_query}'")
+            context = self.google_search(cleaned_query)
+            if hasattr(self, 'dashboard') and context:
+                self.dashboard.push_focus(
+                    "docs", "Web Search — " + cleaned_query[:30],
+                    f"Query: {cleaned_query}\n\nResults:\n{context[:400]}")
+            self.last_intent = "search"
+
+        # ── STEP 4: LLM brain ─────────────────────────────────────────────────
         context_history = self.get_context_history()
         memory_facts = "\n".join(self.memory.get("facts", []))
-        
-        # Extract Master Profile for health-conscious communication
         master_profile = self.memory.get("master_profile", {})
         working_method = master_profile.get("working_method", "")
         communication_style = master_profile.get("communication_style", "")
-        health_profile = master_profile.get("health_profile", {})
-        
-        # Check for project mention and auto-switch if detected
+
         self.detect_and_switch_project(raw_text)
-        
+
+        # Inject relevant past actions for memory-recall queries
+        memory_recall_context = ""
+        if re.search(r'\b(?:did|have)\s+(?:i|you|we)\s', text_lower):
+            for kw in [w for w in text_lower.split() if len(w) > 3]:
+                hits = self.memory_index.search_by_keyword(kw, limit=2)
+                if hits:
+                    memory_recall_context = (
+                        "RELEVANT PAST ACTIONS:\n"
+                        + "\n".join(f"- {h.get('description', '')}"
+                                    for h in hits[:2])
+                        + "\n")
+                    break
+
+        # Anti-hallucination: file mention without context
+        if ("file" in text_lower or "document" in text_lower
+                or "spec" in text_lower) and not context:
+            response = ("Sir, I see you mentioned a file. "
+                        "Would you like me to read and analyze it for you?")
+            self.log(f"Jarvis: {response}")
+            self.speak_with_piper(response)
+            return
+
+        vault_path = self.vault_root.replace('\\', '/')
+
+        base_system = (
+            f"SYSTEM: You are Jarvis, a personal assistant to Spencer.\n"
+            f"Location: {LOCATION_OVERRIDE}\n\n"
+            f"SPENCER'S PROFILE:\n"
+            f"- Working Method: {working_method}\n"
+            f"- Communication Style: {communication_style}\n"
+            f"- Health: Manages chronic pain and anxiety\n\n"
+            f"PROJECT VAULT: {vault_path} — active: [{self.active_project}]\n\n"
+            f"FACTS ABOUT SPENCER:\n{memory_facts}\n\n"
+            f"{memory_recall_context}"
+            f"{context_history}\n"
+        )
+
         if context:
-            # If we have external data, use it with context and memory
-            vault_path = self.vault_root.replace('\\', '/')
-            prompt = f"""
-SYSTEM: You are Jarvis, a helpful voice assistant serving Spencer.
-Location: {LOCATION_OVERRIDE}
-
-SPENCER'S PROFILE:
-- Working Method: {working_method}
-- Communication Style: {communication_style}
-- Health: Manages chronic pain and anxiety
-
-PROJECT VAULT ACCESS:
-- You have access to Spencer's Project Vault at {vault_path}
-- Currently focused on: [{self.active_project}]
-- You can read files and search across projects when asked
-- All file access is read-only for security
-
-FACTS ABOUT YOUR MASTER:
-{memory_facts}
-
-{context_history}
-
-LIVE DATA:
-{context}
-
-USER QUESTION: {raw_text}
-
-RESPONSE GUIDELINES:
-- Keep responses concise and low-friction (Spencer prefers brevity)
-- Be health-conscious in your language
-- Answer based on the provided data
-- Use vault tools (list_vault_projects, read_project_file, search_vault) when asked about projects
-- Natural, conversational tone suitable for voice delivery
-- When discussing code, use clear Markdown formatting for readability
-- Do not append status footers (location/brain/ready) unless explicitly asked
-"""
+            prompt = (base_system
+                      + f"LIVE DATA:\n{context}\n\n"
+                      + f"USER: {raw_text}\n\n"
+                      + "RESPONSE GUIDELINES:\n"
+                      + "- Concise, low-friction, voice-suitable\n"
+                      + "- Answer based on the provided data only\n"
+                      + "- Never say 'as an AI language model'\n"
+                      + "- Do not append status footers\n"
+                      + "- Never use markdown, code blocks, bullet points or any text formatting — plain spoken English only\n")
         else:
-            # Normal conversation with context and memory
-            vault_path = self.vault_root.replace('\\', '/')
-            prompt = f"""
-SYSTEM: You are Jarvis, a helpful voice assistant speaking to Spencer.
-Location: {LOCATION_OVERRIDE}
+            prompt = (base_system
+                      + f"USER: {raw_text}\n\n"
+                      + "RESPONSE GUIDELINES:\n"
+                      + "- Concise, butler tone, voice-suitable\n"
+                      + "- Answer naturally and conversationally\n"
+                      + "- Never say 'as an AI language model'\n"
+                      + "- Do not append status footers\n"
+                      + "- Never use markdown, code blocks, bullet points or any text formatting — plain spoken English only\n")
 
-SPENCER'S PROFILE:
-- Working Method: {working_method}
-- Communication Style: {communication_style}
-- Health: Manages chronic pain and anxiety
-
-PROJECT VAULT ACCESS:
-- You have access to Spencer's Project Vault at {vault_path}
-- Currently focused on: [{self.active_project}]
-- You can read files and search across projects when asked
-- All file access is read-only for security
-
-FACTS ABOUT YOUR MASTER:
-{memory_facts}
-
-{context_history}
-
-USER: {raw_text}
-
-RESPONSE GUIDELINES:
-- Keep responses concise and low-friction (Spencer prefers brevity)
-- Be health-conscious in your language
-- Answer naturally and conversationally
-- Use vault tools (list_vault_projects, read_project_file, search_vault) when asked about projects
-- Keep responses suitable for voice delivery
-- When discussing code, use clear Markdown formatting for readability on 4-screen setup
-- Do not append status footers (location/brain/ready) unless explicitly asked
-"""
-        
         self.status_var.set("Status: Thinking...")
         try:
-            # Check gaming mode - skip AI processing
             if self.gaming_mode:
-                self.log("⚠️  Gaming Mode active - AI brain disabled")
-                self.speak_with_piper("Gaming mode is enabled, I cannot process requests.")
+                self.log("⚠️  Gaming Mode active — AI brain disabled")
+                self.speak_with_piper(
+                    "Gaming mode is enabled, I cannot process requests.")
                 return
-            
-            logger.debug(f"Sending request to LLM: {BRAIN_URL}")
-            response = requests.post(BRAIN_URL, json={"model": LLM_MODEL, "prompt": prompt, "stream": False})
-            answer = response.json().get('response', "I encountered an error thinking.")
+
+            logger.debug(f"Sending to LLM: {BRAIN_URL}")
+            response = requests.post(
+                BRAIN_URL,
+                json={"model": LLM_MODEL, "prompt": prompt, "stream": False})
+            answer = response.json().get(
+                'response', "I encountered an error thinking.")
             self.log(f"Jarvis: {answer}")
             self.speak_with_piper(answer)
-            
-            # Push conversation context to dashboard focus window
+
+            # Update dashboard focus window
             if hasattr(self, 'dashboard'):
-                focus_content = f"User: {raw_text[:120]}\n\nJarvis: {answer[:260]}"
                 self.dashboard.push_focus(
-                    content_type="docs" if context else "docs",
-                    title="Latest Conversation",
-                    content=focus_content
-                )
-            
-            # Update short-term context buffer with this exchange
+                    "docs", "Latest Conversation",
+                    f"You: {raw_text[:150]}\n\nJarvis: {answer[:300]}")
+
+            # Update short-term context buffer
             self.add_to_context("User", raw_text)
             self.add_to_context("Jarvis", answer)
-            
-            # Log conversation interaction to persistent memory
+
+            # Log to persistent memory
             self.log_vault_action(
                 action_type="conversation",
-                description=f"Conversation: {raw_text[:50]}{'...' if len(raw_text) > 50 else ''}",
+                description=f"Conversation: {raw_text[:60]}",
                 metadata={
                     "user_query": raw_text,
-                    "response_preview": answer[:100] if len(answer) > 100 else answer,
-                    "response_length": len(answer),
+                    "response_preview": answer[:100],
                     "context_used": bool(context)
-                }
-            )
-            
-            # Check health: Proactively suggest breaks
+                })
+
+            # Proactive health break check (now actually speaks)
             self.interaction_count += 1
-            if self.health_intervener():
-                self.log("💊 Proposing a health break...")
-                # Don't speak immediately, just log the suggestion for next interaction
-            
-            # Save memory periodically
+            self.health_intervener()
+
             self.save_memory()
-            
-            # Process notification queue (routine updates)
+
+            # Process queued notifications — grouped by source
             if self.notification_queue:
-                self.log("📩 Processing routine notifications...")
-                notification_summary = "While you were busy, I received: "
-                for notif in self.notification_queue:
-                    notification_summary += f"{notif['source']}: {notif['message'][:50]}. "
-                self.notification_queue = []  # Clear queue
-                # Speak the summary (with echo-fix delay already applied)
-                time.sleep(0.2)  # Brief pause before reading notifications
-                self.speak_with_piper(notification_summary)
-            
+                self.log("📩 Processing queued notifications...")
+                queue_copy = list(self.notification_queue)
+                self.notification_queue = []
+                by_source: dict = {}
+                for n in queue_copy:
+                    src = n.get('source', 'Unknown')
+                    by_source.setdefault(src, []).append(n)
+                parts = []
+                for src, items in by_source.items():
+                    if len(items) == 1:
+                        parts.append(items[0]['message'][:80])
+                    else:
+                        parts.append(
+                            f"{len(items)} {src} updates received")
+                summary = "While you were busy: " + ". ".join(parts) + "."
+                time.sleep(0.2)
+                self.speak_with_piper(summary)
+
             self.last_interaction_time = time.time()
             logger.debug("Conversation processed successfully")
+
         except Exception as e:
             self.log(f"Brain Error: {e}")
             logger.error(f"Brain processing failed: {e}", exc_info=True)
@@ -2717,8 +3736,8 @@ RESPONSE GUIDELINES:
                 try:
                     self.current_tts_process.kill()
                     logger.debug("TTS process killed")
-                except:
-                    pass
+                except Exception as e:
+                    logger.debug("TTS process kill skip: %s", e)
                 self.current_tts_process = None
             
             # Reset speaking flag
@@ -2999,9 +4018,9 @@ if __name__ == "__main__":
             app.is_listening = False
             try:
                 app.quit()
-            except:
-                pass
-    
+            except Exception as e:
+                logger.debug("App quit skip: %s", e)
+
     # Register signal handlers
     signal.signal(signal.SIGINT, signal_handler)
     if hasattr(signal, 'SIGTERM'):
