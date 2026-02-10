@@ -904,7 +904,12 @@ Keep it brief and actionable."""
             self.log("\n📊 SUMMARY:")
             self.log(summary)
             self.speak_with_piper(f"Here's the summary: {summary}")
-            
+
+            # Display in focus panel
+            if hasattr(self, 'dashboard'):
+                panel_content = f"Summary:\n{summary}\n\n---\n\nFull Document (excerpt):\n{doc_content[:2000]}"
+                self.dashboard.push_focus("docs", doc_title, panel_content)
+
             # Open in browser as well
             import webbrowser
             webbrowser.open(doc_url)
@@ -1363,7 +1368,14 @@ Format your response as a clear, professional code review suitable for documenta
             confirmation = f"Sir, the optimization report for {filename} is ready in your Drive."
             self.speak_with_piper(confirmation)
             self.log(f"🔊 Confirmed: {confirmation}")
-            
+
+            # Display content in focus panel immediately
+            if hasattr(self, 'dashboard'):
+                preview = optimization_analysis[:3000]
+                if len(optimization_analysis) > 3000:
+                    preview += "\n\n[... truncated — see Google Doc for full report]"
+                self.dashboard.push_focus("docs", doc_title, preview)
+
             # Add to context buffer for conversation continuity
             self.add_to_context("Task", f"Optimization analysis completed: {filename}")
             self.add_to_context("Jarvis", f"Report created: {doc_title}")
@@ -1668,6 +1680,8 @@ Format your response as a clear, professional code review suitable for documenta
         if priority == "URGENT":
             self.urgent_interrupt = True
             logger.warning(f"URGENT notification queued: {message}")
+            if hasattr(self, 'dashboard'):
+                self.dashboard.push_focus("email", f"URGENT — {source}", message)
         elif str(priority).upper() == "HIGH":
             queued_msg = {
                 "source": source,
@@ -1686,6 +1700,23 @@ Format your response as a clear, professional code review suitable for documenta
                     self.last_notification_speak_time = now
                     self.speak_with_piper(message)
                     logger.info(f"High-priority notification spoken: {message}")
+                    # Push email details to focus panel
+                    if hasattr(self, 'dashboard'):
+                        email_sender = metadata.get('sender', '')
+                        email_subject = metadata.get('subject', '')
+                        email_snippet = metadata.get('snippet', '')
+                        parts = []
+                        if email_sender:
+                            parts.append(f"From: {email_sender}")
+                        if email_subject:
+                            parts.append(f"Subject: {email_subject}")
+                        if email_snippet:
+                            parts.append(f"\n{email_snippet}")
+                        panel = "\n".join(parts) if parts else message
+                        self.dashboard.push_focus(
+                            "email",
+                            f"{source} — {datetime.now().strftime('%H:%M')}",
+                            panel)
                 else:
                     self.notification_queue.append(queued_msg)
                     logger.debug(f"High-priority notification queued (cooldown): {message}")
@@ -3395,6 +3426,17 @@ Format your response as a clear, professional code review suitable for documenta
                 self.handle_task_request(raw_text)
                 return True
 
+        # Optimization follow-ups — "display it", "show the file on screen", "put it up"
+        if self.last_intent == "optimization":
+            if any(w in text_lower for w in ["display", "put on", "show on"]):
+                self.handle_report_retrieval(raw_text)
+                return True
+            if (any(w in text_lower for w in ["show", "open", "view"])
+                    and any(w in text_lower for w in [
+                        "document", "doc", "file", "report", "result", "it", "that"])):
+                self.handle_report_retrieval(raw_text)
+                return True
+
         return False
 
     def process_conversation(self, raw_text):
@@ -3519,11 +3561,12 @@ Format your response as a clear, professional code review suitable for documenta
         # Report retrieval
         elif (("open" in text_lower or "show" in text_lower
                or "read" in text_lower or "summarize" in text_lower
-               or "summary" in text_lower)
+               or "summary" in text_lower or "display" in text_lower
+               or "put" in text_lower)
               and ("last" in text_lower or "latest" in text_lower
                    or "recent" in text_lower)
               and ("report" in text_lower or "optimization" in text_lower
-                   or "document" in text_lower)):
+                   or "document" in text_lower or "file" in text_lower)):
             logger.debug("Intent: Retrieve Last Report")
             self.log("📄 Retrieving last optimization report...")
             self.handle_report_retrieval(raw_text)
@@ -3598,8 +3641,8 @@ Format your response as a clear, professional code review suitable for documenta
             context = self.google_search(cleaned_query)
             if hasattr(self, 'dashboard') and context:
                 self.dashboard.push_focus(
-                    "docs", "Web Search — " + cleaned_query[:30],
-                    f"Query: {cleaned_query}\n\nResults:\n{context[:400]}")
+                    "docs", "Web Search — " + cleaned_query[:40],
+                    f"Query: {cleaned_query}\n\n{context}")
             self.last_intent = "search"
 
         # ── STEP 4: LLM brain ─────────────────────────────────────────────────
@@ -3687,9 +3730,12 @@ Format your response as a clear, professional code review suitable for documenta
 
             # Update dashboard focus window
             if hasattr(self, 'dashboard'):
-                self.dashboard.push_focus(
-                    "docs", "Latest Conversation",
-                    f"You: {raw_text[:150]}\n\nJarvis: {answer[:300]}")
+                if context:
+                    panel = (f"You: {raw_text}\n\nJarvis: {answer}\n\n"
+                             f"─── Context ───\n{context[:400]}")
+                else:
+                    panel = f"You: {raw_text}\n\nJarvis: {answer}"
+                self.dashboard.push_focus("docs", "Latest Conversation", panel)
 
             # Update short-term context buffer
             self.add_to_context("User", raw_text)
@@ -3721,15 +3767,30 @@ Format your response as a clear, professional code review suitable for documenta
                     src = n.get('source', 'Unknown')
                     by_source.setdefault(src, []).append(n)
                 parts = []
+                focus_lines = []
                 for src, items in by_source.items():
                     if len(items) == 1:
                         parts.append(items[0]['message'][:80])
                     else:
-                        parts.append(
-                            f"{len(items)} {src} updates received")
+                        parts.append(f"{len(items)} {src} updates received")
+                    for item in items:
+                        meta = item.get('metadata', {})
+                        n_sender = meta.get('sender', '')
+                        n_subject = meta.get('subject', '')
+                        n_snippet = meta.get('snippet', '')
+                        if n_sender or n_subject:
+                            line = f"• From: {n_sender}\n  Subject: {n_subject}"
+                            if n_snippet:
+                                line += f"\n  {n_snippet[:120]}"
+                            focus_lines.append(line)
+                        else:
+                            focus_lines.append(f"• {item['message'][:120]}")
                 summary = "While you were busy: " + ". ".join(parts) + "."
                 time.sleep(0.2)
                 self.speak_with_piper(summary)
+                if hasattr(self, 'dashboard'):
+                    panel = "\n\n".join(focus_lines) if focus_lines else summary
+                    self.dashboard.push_focus("email", "Queued Notifications", panel)
 
             self.last_interaction_time = time.time()
             logger.debug("Conversation processed successfully")
@@ -3960,6 +4021,7 @@ Format your response as a clear, professional code review suitable for documenta
                 sender = data.get("sender", "Unknown")
                 subject = data.get("subject", "No Subject")
                 email_id = data.get("id")
+                snippet = data.get("snippet", "")
                 
                 # DEBUG: Log payload when missing critical fields
                 if sender == "Unknown" or subject == "No Subject":
@@ -4001,7 +4063,8 @@ Format your response as a clear, professional code review suitable for documenta
                     "metadata": {
                         "sender": sender,
                         "subject": subject,
-                        "id": email_id
+                        "id": email_id,
+                        "snippet": snippet
                     }
                 }
                 
