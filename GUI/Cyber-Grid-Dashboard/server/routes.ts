@@ -83,11 +83,11 @@ export async function registerRoutes(
           // Forward health updates (pain/anxiety) to Jarvis
           broadcast(wss, msg, ws);
         } else if (msg.command === "toggle" && msg.key) {
-          // Handle UI control toggles
+          // Handle UI control toggles — broadcast to ALL including sender so switch flips
           const key = msg.key as keyof JarvisState;
           if (key in state && key !== "mode") {
             (state as any)[key] = msg.value;
-            broadcast(wss, { type: "state", data: state }, ws);
+            broadcast(wss, { type: "state", data: state });
           }
         }
       } catch (e) {

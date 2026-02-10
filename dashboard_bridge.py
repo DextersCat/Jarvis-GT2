@@ -108,18 +108,26 @@ class DashboardBridge:
         try:
             data = json.loads(message)
             
-            # Handle toggle commands from UI
+            # Handle toggle commands from UI (direct, if ever forwarded)
             if data.get("command") == "toggle":
                 key = data.get("key")
                 value = data.get("value")
                 if key in self.current_state:
                     self.current_state[key] = value
                     logger.debug(f"Dashboard toggle: {key}={value}")
-                    
-                    # Notify Jarvis of state change
                     if self.on_state_change:
                         self.on_state_change(key, value)
-            
+
+            # Handle state broadcasts from server (e.g. after a UI toggle)
+            elif data.get("type") == "state":
+                incoming = data.get("data", {})
+                for key in ("gamingMode", "muteMic", "conversationalMode"):
+                    if key in incoming and incoming[key] != self.current_state.get(key):
+                        self.current_state[key] = incoming[key]
+                        logger.debug(f"State sync from server: {key}={incoming[key]}")
+                        if self.on_state_change:
+                            self.on_state_change(key, incoming[key])
+
             # Handle health updates (mood/pain tracker)
             elif data.get("command") == "health_update":
                 metric_type = data.get("type")  # "pain" or "anxiety"
