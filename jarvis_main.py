@@ -865,6 +865,79 @@ Keep it brief and actionable."""
             self.log(f"❌ Error retrieving report: {e}")
             self.speak_with_piper("I encountered an error retrieving the report.")
     
+    def handle_email_summary_request(self):
+        """
+        Summarize recent emails received through n8n workflow.
+        Pulls from notification history and generates AI summary.
+        """
+        try:
+            # Check if we have recent email notifications
+            email_notifications = []
+            
+            # Look for emails in the notification queue
+            if self.notification_queue:
+                email_notifications = [
+                    n for n in self.notification_queue 
+                    if n.get('source') == 'Email'
+                ]
+            
+            if not email_notifications:
+                self.log("❌ No recent emails found")
+                self.speak_with_piper("You don't have any recent emails in the queue.")
+                return
+            
+            # Format emails for LLM summarization
+            email_text = "RECENT EMAILS:\n"
+            for i, email in enumerate(email_notifications[-5:], 1):  # Last 5 emails
+                metadata = email.get('metadata', {})
+                email_text += f"{i}. From: {metadata.get('sender', 'Unknown')}\n"
+                email_text += f"   Subject: {metadata.get('subject', 'No Subject')}\n"
+                email_text += f"   {email.get('message', '')}\n\n"
+            
+            self.log(f"📧 Found {len(email_notifications)} email(s)")
+            self.log("🧠 Generating summary...")
+            self.speak_with_piper("Summarizing your emails now.")
+            
+            # Send to brain for summarization
+            summary_prompt = f"""Provide a brief executive summary of these emails in 2-3 sentences:
+
+{email_text}
+
+Keep it concise and highlight the most important senders/topics. Focus on action items if any."""
+            
+            response = requests.post(
+                BRAIN_URL,
+                json={
+                    "model": LLM_MODEL,
+                    "prompt": summary_prompt,
+                    "stream": False
+                },
+                timeout=60
+            )
+            
+            summary = response.json().get('response', 'Could not generate summary.')
+            
+            # Display and speak the summary
+            self.log("\n📧 EMAIL SUMMARY:")
+            self.log(summary)
+            self.speak_with_piper(f"Here's your email summary: {summary}")
+            
+            # Log email summary action
+            self.log_vault_action(
+                action_type="email_summarized",
+                description=f"Summarized {len(email_notifications)} email(s)",
+                metadata={
+                    "email_count": len(email_notifications),
+                    "summary_length": len(summary),
+                    "timestamp": datetime.now().isoformat()
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Error summarizing emails: {e}", exc_info=True)
+            self.log(f"❌ Error summarizing emails: {e}")
+            self.speak_with_piper("I encountered an error summarizing your emails.")
+    
     def handle_optimization_request(self, user_request):
         """
         Multi-step intent handler for code analysis and documentation workflow.
@@ -1303,6 +1376,7 @@ Format your response as a clear, professional code review suitable for documenta
         priority = notification.get("priority", "ROUTINE")
         message = notification.get("message", "No content")
         source = notification.get("source", "Unknown")
+        metadata = notification.get("metadata", {})  # Extract metadata for emails, etc.
         
         logger.info(f"n8n Notification [{priority}]: {source} - {message}")
         
@@ -1316,10 +1390,24 @@ Format your response as a clear, professional code review suitable for documenta
                 self.speak_with_piper(message)
                 logger.info(f"High-priority notification spoken: {message}")
             else:
-                self.notification_queue.append({"source": source, "message": message, "timestamp": datetime.now().isoformat()})
+                # Queue with metadata preserved
+                queued_msg = {
+                    "source": source, 
+                    "message": message, 
+                    "timestamp": datetime.now().isoformat(),
+                    "metadata": metadata
+                }
+                self.notification_queue.append(queued_msg)
                 logger.debug(f"High-priority notification queued (cooldown): {message}")
         else:
-            self.notification_queue.append({"source": source, "message": message, "timestamp": datetime.now().isoformat()})
+            # Queue with metadata preserved
+            queued_msg = {
+                "source": source, 
+                "message": message, 
+                "timestamp": datetime.now().isoformat(),
+                "metadata": metadata
+            }
+            self.notification_queue.append(queued_msg)
             logger.debug(f"Routine notification queued: {message}")
     
     def interrupt_and_speak(self, message):
@@ -2041,6 +2129,14 @@ Components: {', '.join(dogzilla.get('components', []))}"""
             self.log("🧠 Starting optimization analysis workflow...")
             self.handle_optimization_request(raw_text)
             # After handling optimization request, don't continue to brain
+            return
+        
+        # EMAIL SUMMARY HANDLER - Summarize recent emails from n8n workflow
+        elif (("summarize" in text_lower or "summary" in text_lower or "read" in text_lower or "show" in text_lower) and 
+              ("email" in text_lower or "emails" in text_lower or "mail" in text_lower)):
+            logger.debug("Intent: Email Summary from n8n workflow")
+            self.log("📧 Retrieving email summary...")
+            self.handle_email_summary_request()
             return
 
         # --- IMPROVED BRAIN LOGIC WITH CONTEXT AND MEMORY ---
