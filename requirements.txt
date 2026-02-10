@@ -2,6 +2,7 @@ customtkinter==5.2.2
 pvporcupine==4.0.1
 pvrecorder==1.2.7
 openai-whisper==20250625
+openai>=1.0.0
 requests==2.32.5
 google-api-python-client==2.189.0
 google-auth==2.48.0

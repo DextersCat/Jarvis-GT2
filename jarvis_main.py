@@ -1215,6 +1215,36 @@ Summary (concise, action-item focused):"""
             self.log(f"❌ Reply failed: {e}")
             self.speak_with_piper("I encountered an error sending your reply.")
     
+    def call_smart_model(self, prompt: str, timeout: int = 120) -> str:
+        """Route to GPT-4o when the OpenAI key is available, fall back to Ollama.
+
+        Used for tasks that require deep reasoning (code analysis, etc.) where
+        the local llama3.1:8b model hallucinates or gives generic advice.
+        """
+        openai_key = os.getenv("OPENAI_API_KEY", "")
+        if openai_key:
+            try:
+                from openai import OpenAI
+                client = OpenAI(api_key=openai_key)
+                response = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=2000,
+                    timeout=timeout
+                )
+                logger.info("Smart model: used GPT-4o")
+                return response.choices[0].message.content or ""
+            except Exception as e:
+                logger.warning(f"GPT-4o unavailable, falling back to Ollama: {e}")
+        # Fallback — local Ollama
+        resp = requests.post(
+            BRAIN_URL,
+            json={"model": LLM_MODEL, "prompt": prompt, "stream": False},
+            timeout=timeout
+        )
+        logger.info("Smart model: used Ollama (fallback)")
+        return resp.json().get('response', 'Analysis could not be completed.')
+
     def handle_optimization_request(self, user_request):
         """
         Multi-step intent handler for code analysis and documentation workflow.
@@ -1296,36 +1326,33 @@ Summary (concise, action-item focused):"""
             self.log("🧠 Sending to AI brain for analysis...")
             self.speak_with_piper("Analyzing the code for optimization opportunities.")
             
-            optimization_prompt = f"""You are a expert code reviewer and performance optimizer. 
-Analyze the following code file: {filename}
+            optimization_prompt = f"""You are an expert code reviewer analysing a specific codebase.
+
+ARCHITECTURE (read carefully before analysing):
+- This is a headless Python voice assistant — no GUI, no web framework serving users.
+- NO SQL database, no SQLAlchemy, no db_session, no User/Conversation ORM models.
+- Conversation state is held in self.context_buffer (a Python list already in RAM).
+- Persistent memory is jarvis_memory.json — loaded once at startup, saved periodically.
+- Flask runs in a single daemon background thread solely to receive n8n webhooks on port 5001.
+- Background tasks use threading.Thread(daemon=True) — no thread pool is needed or appropriate.
+- There is nothing to cache — all runtime state is already in memory.
+DO NOT suggest: databases, SQLAlchemy, ThreadPoolExecutor for Flask.run(), or caching layers.
+
+FILE TO ANALYSE: {filename}
 
 CODE:
-```
 {file_content}
-```
 
-Please identify the THREE most important performance optimizations or improvements that could be made to this code. For each optimization:
+Identify the THREE most important real improvements specific to THIS codebase. For each:
+1. Issue: Describe the actual problem found in this file
+2. Impact: What concrete benefit would this provide?
+3. Suggestion: Show a specific code change (not a generic pattern)
 
-1. **Issue**: Describe the problem
-2. **Impact**: What performance or maintainability benefit would this provide?
-3. **Suggestion**: Provide a concrete code example or approach
+Plain text only — no markdown, no bullet symbols, no code fences."""
 
-Format your response as a clear, professional code review suitable for documentation.
-"""
-            
-            # Send to brain (Ollama)
+            # Route to GPT-4o (smart model) — falls back to Ollama if unavailable
             self.status_var.set("Status: 🧠 AI Analysis in Progress...")
-            response = requests.post(
-                BRAIN_URL, 
-                json={
-                    "model": LLM_MODEL, 
-                    "prompt": optimization_prompt, 
-                    "stream": False
-                },
-                timeout=120
-            )
-            
-            optimization_analysis = response.json().get('response', "Analysis could not be completed.")
+            optimization_analysis = self.call_smart_model(optimization_prompt, timeout=120)
             self.log("✓ Analysis complete")
             
             # Step 4: Create Google Doc with the analysis (Scribe Workflow)
