@@ -195,6 +195,7 @@ class JarvisGT2:
         self.is_listening = False
         self.gaming_mode = False
         self.conversation_mode = False
+        self.mic_muted = False
         self.last_interaction_time = 0
         self.stt_model = whisper.load_model("base", device="cpu", download_root=None, in_memory=False)
         self.porcupine = None
@@ -479,11 +480,13 @@ class JarvisGT2:
                 self.start_listening()
                 
         elif key == "muteMic" or key == "muteMic":
-            # For now, just log the change (muting could be implemented in audio capture)
+            self.mic_muted = value
             if value:
                 self.log("🔇 Microphone: MUTED")
+                logger.info("Microphone muted - audio input will be ignored")
             else:
                 self.log("🔊 Microphone: UNMUTED")
+                logger.info("Microphone unmuted - audio input active")
                 
         elif key == "conversationalMode":
             self.conversation_mode = value
@@ -810,6 +813,12 @@ class JarvisGT2:
             
             self.log(f"✓ Read {len(doc_content)} characters from document")
             
+            # Check gaming mode - skip AI processing
+            if self.gaming_mode:
+                self.log("⚠️  Gaming Mode active - AI brain disabled")
+                self.speak_with_piper("Gaming mode is enabled, AI processing is disabled.")
+                return
+            
             # Send to brain for summarization
             self.log("🧠 Analyzing report for summary...")
             self.speak_with_piper("Analyzing the report for you.")
@@ -908,6 +917,12 @@ Keep it brief and actionable."""
                     email_text += f"   {email.get('message', '')}\n\n"
                 
                 self.log(f"📧 Found {len(email_notifications)} email(s) in queue")
+            
+            # Check gaming mode - skip AI processing
+            if self.gaming_mode:
+                self.log("⚠️  Gaming Mode active - AI brain disabled")
+                self.speak_with_piper("Gaming mode is enabled, AI processing is disabled.")
+                return
             
             # Send to brain for summarization
             self.log("🧠 Generating AI summary...")
@@ -1205,6 +1220,12 @@ Summary (concise, action-item focused):"""
             
             file_content = file_data['content']
             filename = file_data['filename']
+            
+            # Check gaming mode - skip AI processing
+            if self.gaming_mode:
+                self.log("⚠️  Gaming Mode active - AI brain disabled")
+                self.speak_with_piper("Gaming mode is enabled, code optimization is disabled.")
+                return
             
             # Step 3: Send to Ollama/Brain for optimization analysis
             self.log("🧠 Sending to AI brain for analysis...")
@@ -2621,6 +2642,12 @@ RESPONSE GUIDELINES:
         
         self.status_var.set("Status: Thinking...")
         try:
+            # Check gaming mode - skip AI processing
+            if self.gaming_mode:
+                self.log("⚠️  Gaming Mode active - AI brain disabled")
+                self.speak_with_piper("Gaming mode is enabled, I cannot process requests.")
+                return
+            
             logger.debug(f"Sending request to LLM: {BRAIN_URL}")
             response = requests.post(BRAIN_URL, json={"model": LLM_MODEL, "prompt": prompt, "stream": False})
             answer = response.json().get('response', "I encountered an error thinking.")
@@ -2792,6 +2819,12 @@ RESPONSE GUIDELINES:
                 if self.gaming_mode:
                     logger.info("Gaming mode detected - stopping wake word loop")
                     break
+                
+                # Check if microphone is muted
+                if self.mic_muted:
+                    logger.debug("Microphone muted - skipping audio processing")
+                    time.sleep(0.1)
+                    continue
                 
                 # Check if we should skip wake word detection (Conversation Mode)
                 if self.should_skip_wake_word():

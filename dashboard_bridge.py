@@ -48,7 +48,7 @@ class DashboardBridge:
             "mode": "idle",
             "gamingMode": False,
             "muteMic": False,
-            "conversationalMode": True
+            "conversationalMode": False
         }
         
         logger.info(f"Dashboard bridge initialized: {dashboard_url}")

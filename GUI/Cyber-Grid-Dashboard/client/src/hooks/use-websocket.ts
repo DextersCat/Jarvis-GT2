@@ -43,7 +43,7 @@ const initialData: DashboardData = {
     mode: "idle",
     gamingMode: false,
     muteMic: false,
-    conversationalMode: true,
+    conversationalMode: false,
   },
   logs: [],
   focusContent: {
