@@ -1667,21 +1667,26 @@ Format your response as a clear, professional code review suitable for documenta
             self.urgent_interrupt = True
             logger.warning(f"URGENT notification queued: {message}")
         elif str(priority).upper() == "HIGH":
-            now = time.time()
-            if now - self.last_notification_speak_time >= self.notification_cooldown:
-                self.last_notification_speak_time = now
-                self.speak_with_piper(message)
-                logger.info(f"High-priority notification spoken: {message}")
-            else:
-                # Queue with metadata preserved
-                queued_msg = {
-                    "source": source, 
-                    "message": message, 
-                    "timestamp": datetime.now().isoformat(),
-                    "metadata": metadata
-                }
+            queued_msg = {
+                "source": source,
+                "message": message,
+                "timestamp": datetime.now().isoformat(),
+                "metadata": metadata
+            }
+            # In conversation mode Jarvis must finish speaking before interrupting —
+            # queue the notification so it plays at the next natural pause
+            if self.conversation_mode:
                 self.notification_queue.append(queued_msg)
-                logger.debug(f"High-priority notification queued (cooldown): {message}")
+                logger.debug(f"High-priority notification queued (conversation mode): {message}")
+            else:
+                now = time.time()
+                if now - self.last_notification_speak_time >= self.notification_cooldown:
+                    self.last_notification_speak_time = now
+                    self.speak_with_piper(message)
+                    logger.info(f"High-priority notification spoken: {message}")
+                else:
+                    self.notification_queue.append(queued_msg)
+                    logger.debug(f"High-priority notification queued (cooldown): {message}")
         else:
             # Queue with metadata preserved
             queued_msg = {
@@ -3098,8 +3103,10 @@ Format your response as a clear, professional code review suitable for documenta
             max_frames = int(max_listen_time * frames_per_second)
             
             while frames_captured < max_frames:
-                # Don't listen while speaking (continuous mode too)
-                if not self.is_listening or self.gaming_mode or not self.conversation_mode or self.is_speaking:
+                # Don't listen while speaking, gaming, or mic muted
+                if (not self.is_listening or self.gaming_mode
+                        or not self.conversation_mode or self.is_speaking
+                        or self.mic_muted):
                     logger.info("Continuous listening interrupted")
                     return None
                 
@@ -3235,6 +3242,11 @@ Format your response as a clear, professional code review suitable for documenta
         """Use Piper TTS to speak longer responses (with barge-in support).
         Uses a lock to prevent concurrent audio playback (speaking over self).
         """
+        # Gaming mode silences all output — mic AND speaker are effectively paused
+        if self.gaming_mode:
+            logger.debug("speak_with_piper suppressed: gaming mode active")
+            return
+
         with self.speak_lock:  # Serialize all speech generation
             # Log happens in process_conversation to avoid duplicate entries
             
