@@ -162,6 +162,7 @@ def load_config():
         "energy_threshold": int(os.getenv("VAD_ENERGY_THRESHOLD", config_vad.get("energy_threshold", 500))),
         "silence_duration": float(os.getenv("VAD_SILENCE_DURATION", config_vad.get("silence_duration", 1.2))),
         "min_speech_duration": float(os.getenv("VAD_MIN_SPEECH_DURATION", config_vad.get("min_speech_duration", 0.5))),
+        "mic_gain": float(os.getenv("MIC_GAIN", config_vad.get("mic_gain", 1.25))),
         "barge_in_enabled": os.getenv("VAD_BARGE_IN_ENABLED", str(config_vad.get("barge_in_enabled", False))).lower() == "true",
         "barge_in_threshold": int(os.getenv("VAD_BARGE_IN_THRESHOLD", config_vad.get("barge_in_threshold", 1500))),
         "barge_in_delay": float(os.getenv("VAD_BARGE_IN_DELAY", config_vad.get("barge_in_delay", 1.0)))
@@ -255,7 +256,7 @@ INTENTS = {
     "PROJECT_DOGZILLA": {"keywords": ["dogzilla"], "handler": "handle_dogzilla", "name": "ask about project Dogzilla"},
     "WEATHER": {"keywords": ["weather"], "handler": "handle_weather", "name": "check the weather"},
     "TASK": {
-        "keywords": ["remind me", "reminder", "add to my list", "don't forget", "note to self", "remember to", "what's on my list", "my tasks", "show tasks", "list tasks", "what do i need to do", "done", "complete", "finished", "mark"],
+        "keywords": ["remind me", "reminder", "add to my list", "add a task", "don't forget", "note to self", "remember to", "what's on my list", "my tasks", "show tasks", "list tasks", "what do i need to do", "done", "complete", "finished", "mark"],
         "handler": "handle_task_request", "name": "manage my tasks"
     },
     "MEMORY_RECALL": {
@@ -278,12 +279,14 @@ INTENTS = {
     },
     "CODE_OPTIMIZATION": {
         "keywords": ["analys", "optimise", "optimize", "summary", "report"],
+        "patterns": [r"\banalys[ez]\b", r"\boptimis[ez]\b"],
         "required": ["file", "code", "script"],
         "handler": "handle_optimization_request", "name": "analyze a file"
     },
     "FILE_COMPARISON": {"keywords": ["compare", "comparison"], "handler": "handle_comparison_request", "name": "compare two files"},
     "EMAIL_SUMMARY": {
         "keywords": ["summarize", "summary", "read", "show"],
+        "patterns": [r"\bsummari[sz]e\b", r"\bemail summary\b"],
         "required": ["email", "emails", "mail"],
         "handler": "handle_email_summary_request", "name": "summarize my emails"
     },
@@ -355,6 +358,10 @@ class JarvisGT2:
         self.urgent_interrupt = False
         self.notification_cooldown = 10  # seconds
         self.last_notification_speak_time = 0
+        self.awaiting_command = False
+        self.notification_hold = False
+        self.command_capture_started_at = 0.0
+        self.command_capture_timeout = 15.0
         
         # Email deduplication (track seen email IDs for 1 hour)
         self.seen_email_ids = {}  # {email_id: timestamp}
@@ -385,6 +392,7 @@ class JarvisGT2:
         self.vad_threshold = VAD_SETTINGS.get("energy_threshold", 500)
         self.silence_duration = VAD_SETTINGS.get("silence_duration", 1.2)
         self.min_speech_duration = VAD_SETTINGS.get("min_speech_duration", 0.5)
+        self.mic_gain = VAD_SETTINGS.get("mic_gain", 1.25)
         self.barge_in_enabled = VAD_SETTINGS.get("barge_in_enabled", True)
         self.barge_in_threshold = VAD_SETTINGS.get("barge_in_threshold", 800)
         self.barge_in_delay = VAD_SETTINGS.get("barge_in_delay", 1.0)
@@ -1290,11 +1298,21 @@ Summary (concise, action-item focused):"""
                             }
                         )
 
-                focus_content = summary[:300]
-                for alias, entry in list(self.session_context.items.items())[:5]:
+                cards = []
+                for idx, (_alias, entry) in enumerate(list(self.session_context.items.items())[:5], 1):
                     meta = entry.get("metadata", {})
-                    focus_content += f"\n\n[{alias}] {entry.get('label', 'Unknown')}"
-                    focus_content += f"\n  Subject: {meta.get('subject', 'No Subject')}"
+                    subject = meta.get("subject", "No Subject")
+                    sender = meta.get("sender", "Unknown")
+                    snippet = self._two_sentence_snippet(meta.get("snippet", ""))
+                    link = self._email_permalink(meta.get("id"))
+                    md_link = f"[Open Link]({link})" if link else "Open Link unavailable"
+                    cards.append(
+                        f"### [EMAIL {idx}] {subject}\n"
+                        f"From: {sender}\n\n"
+                        f"{snippet}\n\n"
+                        f"{md_link}\n"
+                    )
+                focus_content = "\n\n".join(cards) if cards else summary[:300]
                 
                 self.dashboard.push_focus(
                     content_type="email",
@@ -1405,60 +1423,7 @@ Summary (concise, action-item focused):"""
         def _get_item(alias: str):
             return self.session_context.get_item(alias.lower()) if alias else None
 
-        # "dig deeper into wr1"
-        m = re.search(r'\bdig\s+deeper\s+into\s+([a-z]+\d+)\b', text)
-        if m:
-            alias = m.group(1).lower()
-            return self.handle_deep_dig(alias)
-
-        # "reply to e1 saying ..."
-        m = re.search(r'\breply\s+to\s+([a-z]+\d+)\s+(?:saying|with)\s+(.+)$', raw_text, re.IGNORECASE)
-        if m:
-            alias = m.group(1).lower()
-            reply_text = m.group(2).strip()
-            item = _get_item(alias)
-            if not item or item.get('type') != 'e':
-                self.speak_with_piper(f"I couldn't find {alias} in this session.")
-                return True
-            meta = item.get('metadata', {})
-            sender_name = self.extract_sender_name(meta.get('sender', item.get('label', 'that sender')))
-            self.pending_reply = {
-                'email_id': meta.get('id'),
-                'sender': meta.get('sender', sender_name),
-                'sender_name': sender_name,
-                'reply_text': reply_text
-            }
-            self.dashboard.push_focus(
-                "email",
-                "Pending Reply - Awaiting Confirmation",
-                f"To: {sender_name}\n\nDraft:\n{reply_text}"
-            )
-            self.speak_with_piper(f"Just to confirm, shall I send that reply to {sender_name}?")
-            self.last_intent = "email"
-            return True
-
-        # "archive e1" / "delete e1" / "trash e1"
-        m = re.search(r'\b(?:archive|delete|trash|bin)\s+([a-z]+\d+)\b', text)
-        if m:
-            alias = m.group(1).lower()
-            item = _get_item(alias)
-            if not item or item.get('type') != 'e':
-                self.speak_with_piper(f"I couldn't find {alias} in this session.")
-                return True
-            email_id = item.get('metadata', {}).get('id')
-            if any(w in text for w in ['delete', 'trash', 'bin']):
-                ok = self.trash_email(email_id)
-                msg = f"Done. {alias} moved to trash." if ok else "I had trouble deleting that email."
-            else:
-                ok = self.archive_email(email_id)
-                msg = f"Done. {alias} archived." if ok else "I had trouble archiving that email."
-            self.speak_with_piper(msg)
-            return True
-
-        # "show e1" / "open wr1" / "show me c1"
-        m = re.search(r'\b(?:show|open)(?:\s+me)?\s+([a-z]+\d+)\b', text)
-        if m:
-            alias = m.group(1).lower()
+        def _present_item(alias: str, open_web: bool = False) -> bool:
             item = _get_item(alias)
             if not item:
                 self.speak_with_piper(f"I couldn't find {alias} in this session.")
@@ -1467,9 +1432,10 @@ Summary (concise, action-item focused):"""
             item_type = item.get('type')
             meta = item.get('metadata', {})
             label = item.get('label', alias)
+
             if item_type == 'w':
                 url = meta.get('url')
-                if 'open' in text and url:
+                if open_web and url:
                     import webbrowser
                     webbrowser.open(url)
                     self.speak_with_piper(f"Opening {label}.")
@@ -1493,7 +1459,206 @@ Summary (concise, action-item focused):"""
                 self.speak_with_piper(f"Showing {alias}.")
                 return True
 
+            self.speak_with_piper(f"I couldn't display {alias}.")
+            return True
+
+        ordinal_map = {
+            "one": 1, "first": 1,
+            "two": 2, "second": 2,
+            "three": 3, "third": 3,
+            "four": 4, "fourth": 4,
+            "five": 5, "fifth": 5,
+            "six": 6, "sixth": 6,
+            "seven": 7, "seventh": 7,
+            "eight": 8, "eighth": 8,
+            "nine": 9, "ninth": 9,
+            "ten": 10, "tenth": 10,
+            # Common Whisper homophones/mis-hearings
+            "for": 4, "to": 2, "too": 2, "won": 1, "ate": 8
+        }
+        ordinal_tokens_pattern = (
+            r"\d+|one|first|two|second|three|third|four|fourth|five|fifth|six|sixth|"
+            r"seven|seventh|eight|eighth|nine|ninth|ten|tenth|for|to|too|won|ate"
+        )
+
+        def _sorted_aliases(item_type=None):
+            aliases = []
+            for alias, item in self.session_context.items.items():
+                if item_type and item.get("type") != item_type:
+                    continue
+                aliases.append(alias)
+            def _alias_sort_key(a):
+                m_num = re.search(r"(\d+)$", a)
+                n = int(m_num.group(1)) if m_num else 9999
+                return (a[:2], n, a)
+            return sorted(aliases, key=_alias_sort_key)
+
+        def _resolve_alias_from_phrase(phrase: str):
+            if not phrase:
+                return None
+            phrase = phrase.strip().lower()
+
+            # Direct short-key support remains first-class.
+            direct = re.search(r"\b([a-z]+\d+)\b", phrase)
+            if direct:
+                return direct.group(1).lower()
+
+            # Natural ordinal support: "web result one", "email 2", "the first result"
+            m_nat = re.search(
+                rf"\b(?:the\s+)?(web|email|result|code|doc|document|analysis|report)\s*(?:result\s*)?({ordinal_tokens_pattern})\b",
+                phrase
+            )
+            if not m_nat:
+                m_nat = re.search(rf"\b(?:the\s+)?({ordinal_tokens_pattern})\s+result\b", phrase)
+                if not m_nat:
+                    return None
+                kind = "result"
+                token = m_nat.group(1)
+            else:
+                kind = m_nat.group(1)
+                token = m_nat.group(2)
+
+            if token.isdigit():
+                ordinal = int(token)
+            else:
+                ordinal = ordinal_map.get(token)
+            if not ordinal or ordinal < 1:
+                return None
+            idx = ordinal - 1
+
+            desired_type = None
+            if kind == "web":
+                desired_type = "w"
+            elif kind == "email":
+                desired_type = "e"
+            elif kind in ("code",):
+                desired_type = "c"
+            elif kind in ("doc", "document", "analysis", "report"):
+                desired_type = "d"
+            elif kind == "result":
+                if self.last_intent == "search":
+                    desired_type = "w"
+                elif self.last_intent == "email":
+                    desired_type = "e"
+                elif self.last_intent == "optimization":
+                    desired_type = "c"
+
+            aliases = _sorted_aliases(desired_type)
+            if idx >= len(aliases):
+                return None
+            return aliases[idx]
+
+        # "dig deeper into wr1"
+        m = re.search(r'\bdig\s+deeper\s+into\s+([a-z]+\d+)\b', text)
+        if m:
+            alias = m.group(1).lower()
+            return self.handle_deep_dig(alias)
+        m = re.search(r'\bdig\s+deeper\s+into\s+(.+)$', text)
+        if m:
+            alias = _resolve_alias_from_phrase(m.group(1))
+            if alias:
+                return self.handle_deep_dig(alias)
+
+        # Natural quick deep-dig: "web result 3" / "result one"
+        m = re.fullmatch(
+            rf'\s*(?:the\s+)?(?:web\s+)?result\s*({ordinal_tokens_pattern})\s*',
+            text
+        )
+        if m:
+            alias = _resolve_alias_from_phrase(f"web result {m.group(1)}")
+            if alias:
+                item = _get_item(alias)
+                if item and item.get("type") == "w":
+                    return self.handle_deep_dig(alias)
+
+        # "reply to e1 saying ..." or "reply to e1"
+        m = re.search(r'\breply\s+to\s+([a-z]+\d+|.+?)(?:\s+(?:saying|with)\s+(.+))?$', raw_text, re.IGNORECASE)
+        if m:
+            alias = _resolve_alias_from_phrase(m.group(1)) or m.group(1).lower()
+            reply_text = (m.group(2) or "").strip()
+            item = _get_item(alias)
+            if not item or item.get('type') != 'e':
+                self.speak_with_piper(f"I couldn't find {alias} in this session.")
+                return True
+            if not reply_text:
+                self.speak_with_piper("What would you like me to say in the reply?")
+                return True
+            meta = item.get('metadata', {})
+            sender_name = self.extract_sender_name(meta.get('sender', item.get('label', 'that sender')))
+            self.pending_reply = {
+                'email_id': meta.get('id'),
+                'sender': meta.get('sender', sender_name),
+                'sender_name': sender_name,
+                'reply_text': reply_text
+            }
+            self.dashboard.push_focus(
+                "email",
+                "Pending Reply - Awaiting Confirmation",
+                f"To: {sender_name}\n\nDraft:\n{reply_text}"
+            )
+            self.speak_with_piper(f"Just to confirm, shall I send that reply to {sender_name}?")
+            self.last_intent = "email"
+            return True
+
+        # "archive e1" / "delete e1" / "trash e1"
+        m = re.search(r'\b(?:archive|delete|trash|bin)\s+([a-z]+\d+|.+)$', text)
+        if m:
+            alias = _resolve_alias_from_phrase(m.group(1)) or m.group(1).lower()
+            item = _get_item(alias)
+            if not item or item.get('type') != 'e':
+                self.speak_with_piper(f"I couldn't find {alias} in this session.")
+                return True
+            email_id = item.get('metadata', {}).get('id')
+            if any(w in text for w in ['delete', 'trash', 'bin']):
+                ok = self.trash_email(email_id)
+                msg = f"Done. {alias} moved to trash." if ok else "I had trouble deleting that email."
+            else:
+                ok = self.archive_email(email_id)
+                msg = f"Done. {alias} archived." if ok else "I had trouble archiving that email."
+            self.speak_with_piper(msg)
+            return True
+
+        # "show e1" / "open wr1" / "show me c1"
+        m = re.search(r'\b(?:show|open)(?:\s+me)?\s+([a-z]+\d+|.+)$', text)
+        if m:
+            alias = _resolve_alias_from_phrase(m.group(1)) or m.group(1).lower()
+            return _present_item(alias, open_web=('open' in text))
+
+        # Natural quick-action references:
+        # - "web result 3" -> deep dive that web result
+        # - "email 2" / "doc 1" / "code 1" / "result 2" -> present item
+        m = re.fullmatch(
+            rf'\s*(?:the\s+)?(?:web|email|result|code|doc|document|analysis|report)?\s*(?:result\s*)?({ordinal_tokens_pattern})\s*',
+            text
+        )
+        if m:
+            alias = _resolve_alias_from_phrase(text)
+            if alias:
+                item = _get_item(alias)
+                if item and item.get("type") == "w":
+                    return self.handle_deep_dig(alias)
+                return _present_item(alias)
+
         return False
+
+    def _two_sentence_snippet(self, text: str, max_chars: int = 280) -> str:
+        """Return up to two short sentences for focus-card previews."""
+        if not text:
+            return "No summary snippet available."
+        cleaned = " ".join(str(text).split())
+        parts = re.split(r'(?<=[.!?])\s+', cleaned)
+        snippet = " ".join(parts[:2]).strip()
+        if not snippet:
+            snippet = cleaned
+        if len(snippet) > max_chars:
+            snippet = snippet[:max_chars].rstrip() + "..."
+        return snippet
+
+    def _email_permalink(self, email_id: str) -> str:
+        """Build a direct Gmail permalink when message id is available."""
+        if not email_id:
+            return ""
+        return f"https://mail.google.com/mail/u/0/#inbox/{email_id}"
 
     def handle_web_search(self, user_request: str):
         """Search the web, store results as wr* session items, and update dashboard."""
@@ -1518,7 +1683,8 @@ Summary (concise, action-item focused):"""
         if hasattr(self, "session_context") and self.session_context:
             self.session_context.clear()
 
-        lines = []
+        cards = []
+        summary_seed = []
         for idx, item in enumerate(results[:5], 1):
             title = item.get('title', 'Untitled').split('|')[0].strip()
             snippet = item.get('snippet', '')
@@ -1536,13 +1702,34 @@ Summary (concise, action-item focused):"""
                 item_type='w',
                 metadata={'title': title, 'snippet': snippet, 'url': url}
             )
-            lines.append(f"[{short_alias}] {title}")
+            md_link = f"[Open Link]({url})" if url else "Open Link unavailable"
+            summary_snippet = self._two_sentence_snippet(snippet)
+            cards.append(
+                f"### [WEB RESULT {idx}] {title}\n"
+                f"{summary_snippet}\n\n"
+                f"{md_link}\n"
+            )
+            summary_seed.append(
+                f"{idx}. {title}\nSummary Snippet: {summary_snippet}\nURL: {url or 'N/A'}"
+            )
 
-        focus_content = "\n".join(lines)
+        focus_content = "\n\n".join(cards)
         self.dashboard.push_focus("docs", f"Web Results: {query}", focus_content)
         self.dashboard.update_ticker(self.session_context.get_all_items_for_ticker())
-        count = len(lines)
-        self.speak_with_piper(f"Sir, I've found {count} result{'s' if count != 1 else ''}. They are on screen.")
+        count = len(cards)
+
+        summary_prompt = (
+            "You are assisting Spencer (the Master). "
+            "Do not just say you found a list. "
+            "Provide a 3-bullet point summary of the most important insights from these results "
+            "so the Master can decide which one to dig into.\n\n"
+            f"Search query: {query}\n\n"
+            "Results:\n"
+            f"{chr(10).join(summary_seed)}\n\n"
+            "Return exactly 3 concise bullets."
+        )
+        spoken_summary = self.call_smart_model(summary_prompt, timeout=90)
+        self.speak(spoken_summary)
         self.last_intent = "search"
 
     def handle_deep_dig(self, alias: str) -> bool:
@@ -1774,6 +1961,103 @@ Plain text only — no markdown, no bullet symbols, no code fences."""
 
         Returns True if the input was fully handled (caller should return).
         """
+        # Email follow-ups: "reply to that", "mark that handled", "show it"
+        if self.last_intent == "email":
+            if any(w in text_lower for w in ["reply", "respond", "answer"]):
+                self.handle_email_reply_request(raw_text)
+                return True
+            if any(w in text_lower for w in ["archive", "mark that handled", "handled", "delete", "trash", "bin"]):
+                self.handle_email_management_request(raw_text)
+                return True
+            if any(w in text_lower for w in ["show it", "display it", "open it"]):
+                # Fall back to contextual key resolution if possible
+                return self._handle_contextual_command(raw_text)
+
+        # Task follow-ups.
+        if self.last_intent == "task":
+            if any(w in text_lower for w in ["task", "list", "done", "complete", "mark"]):
+                self.handle_task_request(raw_text)
+                return True
+
+        # Search follow-ups.
+        if self.last_intent == "search":
+            if "dig deeper" in text_lower or "open wr" in text_lower or "show wr" in text_lower:
+                return self._handle_contextual_command(raw_text)
+
+        # Optimization/report follow-ups.
+        if self.last_intent == "optimization":
+            if any(w in text_lower for w in ["show c", "open c", "latest report", "last report", "recent report"]):
+                if self._handle_contextual_command(raw_text):
+                    return True
+                self.handle_report_retrieval(raw_text)
+                return True
+
+        return False
+
+    def _match_intent(self, raw_text):
+        """Score intents from INTENTS and return the best match tuple.
+
+        Returns:
+            (intent_name, intent_cfg, handler_callable) or (None, None, None)
+        """
+        text = raw_text.lower().strip()
+        best = (None, None, None)
+        best_score = 0
+
+        for intent_name, cfg in INTENTS.items():
+            handler_name = cfg.get("handler")
+            handler = getattr(self, handler_name, None)
+            if not callable(handler):
+                continue
+
+            blockers = cfg.get("blockers", [])
+            if any(b in text for b in blockers):
+                continue
+
+            score = 0
+            trigger_score = 0
+
+            for pat in cfg.get("patterns", []):
+                if re.search(pat, text, re.IGNORECASE):
+                    score += 3
+                    trigger_score += 3
+
+            regex = cfg.get("regex")
+            if regex and re.search(regex, text, re.IGNORECASE):
+                score += 3
+                trigger_score += 3
+
+            keyword_hits = sum(1 for kw in cfg.get("keywords", []) if kw in text)
+            score += keyword_hits
+            trigger_score += keyword_hits
+
+            required = cfg.get("required", [])
+            if required:
+                req_hits = sum(1 for req in required if req in text)
+                # "required" is a qualifier and must not match by itself.
+                # The intent must first match a real trigger (keyword/pattern/regex).
+                if trigger_score == 0 or req_hits == 0:
+                    continue
+                score += req_hits * 2
+
+            # Intents without "required" still need at least one trigger to avoid weak matches.
+            if trigger_score == 0:
+                continue
+
+            if score > best_score:
+                best_score = score
+                best = (intent_name, cfg, handler)
+
+        return best
+
+    def _dispatch_intent(self, intent_name, intent_cfg, handler, raw_text):
+        """Dispatch the matched intent handler with proper signature handling."""
+        # Handlers with no user_request parameter.
+        noarg_handlers = {"handle_email_summary_request"}
+        if handler.__name__ in noarg_handlers:
+            handler()
+            return
+        handler(raw_text)
     
     def add_to_context(self, role, message):
         """Add message to short-term context buffer."""
@@ -1797,6 +2081,127 @@ Plain text only — no markdown, no bullet symbols, no code fences."""
         if self.gaming_mode:
             self.log("⚠️  Gaming Mode active - AI brain disabled")
             self.speak_with_piper("Gaming mode is enabled, I cannot process that request.")
+            return
+
+        context_history = self.get_context_history()
+        memory_facts = "\n".join(self.memory.get("facts", []))
+
+        # Extract profile data for tone/context.
+        master_profile = self.memory.get("master_profile", {})
+        working_method = master_profile.get("working_method", "")
+        communication_style = master_profile.get("communication_style", "")
+
+        # Auto-switch project if mentioned.
+        self.detect_and_switch_project(raw_text)
+        vault_path = self.vault_root.replace('\\', '/')
+
+        if context:
+            prompt = f"""
+SYSTEM: You are Jarvis, a helpful voice assistant serving Spencer.
+Location: {LOCATION_OVERRIDE}
+
+SPENCER'S PROFILE:
+- Working Method: {working_method}
+- Communication Style: {communication_style}
+- Health: Manages chronic pain and anxiety
+
+PROJECT VAULT ACCESS:
+- You have access to Spencer's Project Vault at {vault_path}
+- Currently focused on: [{self.active_project}]
+- You can read files and search across projects when asked
+- All file access is read-only for security
+
+FACTS ABOUT YOUR MASTER:
+{memory_facts}
+
+{context_history}
+
+LIVE DATA:
+{context}
+
+USER QUESTION: {raw_text}
+
+RESPONSE GUIDELINES:
+- Keep responses concise and low-friction (Spencer prefers brevity)
+- Be health-conscious in your language
+- Answer based on the provided data
+- Use vault tools when asked about projects
+- Natural, conversational tone suitable for voice delivery
+"""
+        else:
+            prompt = f"""
+SYSTEM: You are Jarvis, a helpful voice assistant speaking to Spencer.
+Location: {LOCATION_OVERRIDE}
+
+SPENCER'S PROFILE:
+- Working Method: {working_method}
+- Communication Style: {communication_style}
+- Health: Manages chronic pain and anxiety
+
+PROJECT VAULT ACCESS:
+- You have access to Spencer's Project Vault at {vault_path}
+- Currently focused on: [{self.active_project}]
+- You can read files and search across projects when asked
+- All file access is read-only for security
+
+FACTS ABOUT YOUR MASTER:
+{memory_facts}
+
+{context_history}
+
+USER: {raw_text}
+
+RESPONSE GUIDELINES:
+- Keep responses concise and low-friction (Spencer prefers brevity)
+- Be health-conscious in your language
+- Answer naturally and conversationally
+- Keep responses suitable for voice delivery
+"""
+
+        self.status_var.set("Status: Thinking...")
+        try:
+            logger.debug(f"Sending request to LLM: {BRAIN_URL}")
+            started_at = time.time()
+            response = requests.post(
+                BRAIN_URL,
+                json={"model": LLM_MODEL, "prompt": prompt, "stream": False}
+            )
+            if hasattr(self, 'dashboard') and self.dashboard:
+                self.dashboard.set_last_ollama_response_time(
+                    int((time.time() - started_at) * 1000)
+                )
+
+            answer = response.json().get('response', "I encountered an error thinking.")
+            self.log(f"Jarvis: {answer}")
+            self.speak_with_piper(answer)
+
+            if hasattr(self, 'dashboard'):
+                focus_content = f"User: {raw_text[:120]}\n\nJarvis: {answer[:260]}"
+                self.dashboard.push_focus("docs", "Latest Conversation", focus_content)
+
+            self.add_to_context("User", raw_text)
+            self.add_to_context("Jarvis", answer)
+            self.log_vault_action(
+                action_type="conversation",
+                description=f"Conversation: {raw_text[:50]}{'...' if len(raw_text) > 50 else ''}",
+                metadata={
+                    "user_query": raw_text,
+                    "response_preview": answer[:100] if len(answer) > 100 else answer,
+                    "response_length": len(answer),
+                    "context_used": bool(context),
+                }
+            )
+
+            self.interaction_count += 1
+            if self.health_intervener():
+                self.log("💊 Proposing a health break...")
+
+            self.save_memory()
+            self.last_interaction_time = time.time()
+            logger.debug("Conversation processed successfully")
+        except Exception as e:
+            self.log(f"Brain Error: {e}")
+            logger.error(f"Brain processing failed: {e}", exc_info=True)
     def health_intervener(self):
         """Proactively propose breaks if Spencer is working too long."""
         health_profile = self.memory.get("master_profile", {}).get("health_profile", {})
@@ -2059,17 +2464,29 @@ Plain text only — no markdown, no bullet symbols, no code fences."""
     
     def handle_n8n_webhook(self, notification):
         """Process notifications from n8n workflow."""
-        priority = notification.get("priority", "ROUTINE")
+        priority = str(notification.get("priority", "ROUTINE")).upper()
         message = notification.get("message", "No content")
         source = notification.get("source", "Unknown")
         metadata = notification.get("metadata", {})  # Extract metadata for emails, etc.
+        self._refresh_command_capture_state()
         
         logger.info(f"n8n Notification [{priority}]: {source} - {message}")
         
         if priority == "URGENT":
             self.urgent_interrupt = True
             logger.warning(f"URGENT notification queued: {message}")
-        elif str(priority).upper() == "HIGH":
+        elif priority == "HIGH":
+            if self.notification_hold:
+                queued_msg = {
+                    "source": source,
+                    "message": message,
+                    "timestamp": datetime.now().isoformat(),
+                    "metadata": metadata,
+                    "priority": priority
+                }
+                self.notification_queue.append(queued_msg)
+                logger.info(f"High-priority notification deferred during command capture: {message}")
+                return
             now = time.time()
             if now - self.last_notification_speak_time >= self.notification_cooldown:
                 self.last_notification_speak_time = now
@@ -2081,7 +2498,8 @@ Plain text only — no markdown, no bullet symbols, no code fences."""
                     "source": source, 
                     "message": message, 
                     "timestamp": datetime.now().isoformat(),
-                    "metadata": metadata
+                    "metadata": metadata,
+                    "priority": priority
                 }
                 self.notification_queue.append(queued_msg)
                 logger.debug(f"High-priority notification queued (cooldown): {message}")
@@ -2091,10 +2509,54 @@ Plain text only — no markdown, no bullet symbols, no code fences."""
                 "source": source, 
                 "message": message, 
                 "timestamp": datetime.now().isoformat(),
-                "metadata": metadata
+                "metadata": metadata,
+                "priority": priority
             }
             self.notification_queue.append(queued_msg)
             logger.debug(f"Routine notification queued: {message}")
+
+    def _start_command_capture(self):
+        """Wake-word activated: pause notification speech until command is captured."""
+        self.awaiting_command = True
+        self.notification_hold = True
+        self.command_capture_started_at = time.time()
+        logger.info("Command capture lock enabled")
+
+    def _end_command_capture(self):
+        """Release capture lock after command processed or timeout."""
+        if self.awaiting_command or self.notification_hold:
+            logger.info("Command capture lock released")
+        self.awaiting_command = False
+        self.notification_hold = False
+        self.command_capture_started_at = 0.0
+
+    def _refresh_command_capture_state(self):
+        """Auto-release stale command capture lock."""
+        if not self.awaiting_command:
+            return
+        if (time.time() - self.command_capture_started_at) > self.command_capture_timeout:
+            logger.warning("Command capture lock timed out; releasing")
+            self._end_command_capture()
+
+    def process_notification_queue(self, context="idle"):
+        """Speak one queued notification when safe to do so."""
+        self._refresh_command_capture_state()
+        if self.notification_hold or self.awaiting_command:
+            return
+        if self.gaming_mode or self.is_speaking:
+            return
+
+        with self.queue_lock:
+            if not self.notification_queue:
+                return
+            item = self.notification_queue.pop(0)
+
+        message = item.get("message", "")
+        if not message:
+            return
+
+        logger.info(f"Processing queued notification ({item.get('priority', 'ROUTINE')}): {message}")
+        self.speak_with_piper(message)
     
     def interrupt_and_speak(self, message):
         """Interrupt current activity and speak urgent message."""
@@ -2595,8 +3057,16 @@ Plain text only — no markdown, no bullet symbols, no code fences."""
             
             logger.info(f"Captured {len(speech_frames)} audio samples via VAD")
             
-            # Convert to numpy array and normalize
+            # Convert to numpy array and apply light gain normalization for quiet captures.
             audio_data = np.array(speech_frames, dtype=np.int16)
+            if self.mic_gain and self.mic_gain != 1.0 and audio_data.size:
+                audio_data = np.clip(audio_data.astype(np.float32) * float(self.mic_gain), -32768, 32767).astype(np.int16)
+            if audio_data.size:
+                peak = float(np.max(np.abs(audio_data)))
+                if 0 < peak < 10000:
+                    gain = min(4.0, 10000.0 / peak)
+                    audio_data = np.clip(audio_data.astype(np.float32) * gain, -32768, 32767).astype(np.int16)
+                    logger.debug(f"Applied audio gain normalization x{gain:.2f} (peak={peak:.0f})")
             
             # Save to temporary WAV file for Whisper
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav:
@@ -2619,10 +3089,20 @@ Plain text only — no markdown, no bullet symbols, no code fences."""
                 self.dashboard.set_transcribing_status(True)
             try:
                 result = self.stt_model.transcribe(temp_path, language='en')
+                text = result['text'].strip()
+                if not text:
+                    logger.info("Empty transcript on first pass, retrying Whisper with deterministic settings")
+                    retry_result = self.stt_model.transcribe(
+                        temp_path,
+                        language='en',
+                        fp16=False,
+                        temperature=0.0,
+                        condition_on_previous_text=False
+                    )
+                    text = retry_result['text'].strip()
             finally:
                 if hasattr(self, "dashboard") and self.dashboard:
                     self.dashboard.set_transcribing_status(False)
-            text = result['text'].strip()
             
             # Clean up temp file
             try:
@@ -2736,6 +3216,8 @@ Plain text only — no markdown, no bullet symbols, no code fences."""
             
             # Convert to numpy array
             audio_data = np.array(speech_frames, dtype=np.int16)
+            if self.mic_gain and self.mic_gain != 1.0 and audio_data.size:
+                audio_data = np.clip(audio_data.astype(np.float32) * float(self.mic_gain), -32768, 32767).astype(np.int16)
             
             # Save to temporary WAV file
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav:
@@ -2818,7 +3300,11 @@ Plain text only — no markdown, no bullet symbols, no code fences."""
         # Remove multiple spaces
         text = ' '.join(text.split())
         return text
-    
+
+    def speak(self, text):
+        """Canonical speech entrypoint for assistant voice output."""
+        self.speak_with_piper(text)
+
     def speak_with_piper(self, text):
         """Use Piper TTS to speak longer responses (with barge-in support).
         Uses a lock to prevent concurrent audio playback (speaking over self).
@@ -2867,23 +3353,41 @@ Plain text only — no markdown, no bullet symbols, no code fences."""
                     if hasattr(self, 'dashboard'):
                         self.dashboard.push_state(mode="speaking")
                     
-                    # Play the audio file using Windows - check for interruptions
-                    self.current_tts_process = subprocess.Popen(
-                        ["powershell", "-c", f"(New-Object Media.SoundPlayer '{temp_path}').PlaySync();"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL
-                    )
-                    
-                    # Monitor for barge-in while playing
-                    while self.current_tts_process.poll() is None:
-                        if self.interrupt_requested:
-                            logger.warning("Barge-in: Stopping speech immediately")
-                            self.current_tts_process.kill()
-                            self.log("🛑 Interrupted - Listening, Sir")
-                            break
-                        time.sleep(0.05)
-                    
-                    # Clean up
+                                        # Prefer native winsound playback on Windows; fallback to PowerShell SoundPlayer.
+                    played_ok = False
+                    if os.name == "nt":
+                        try:
+                            import winsound
+                            with wave.open(temp_path, "rb") as wav_file:
+                                duration_s = wav_file.getnframes() / float(max(1, wav_file.getframerate()))
+                            winsound.PlaySound(temp_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+                            playback_deadline = time.time() + duration_s + 0.5
+                            while time.time() < playback_deadline:
+                                if self.interrupt_requested:
+                                    logger.warning("Barge-in: Stopping speech immediately")
+                                    winsound.PlaySound(None, winsound.SND_PURGE)
+                                    self.log("Interrupted - Listening, Sir")
+                                    break
+                                time.sleep(0.05)
+                            played_ok = True
+                        except Exception as play_err:
+                            logger.warning(f"winsound playback failed, falling back to PowerShell: {play_err}")
+
+                    if not played_ok:
+                        self.current_tts_process = subprocess.Popen(
+                            ["powershell", "-c", f"(New-Object Media.SoundPlayer '{temp_path}').PlaySync();"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL
+                        )
+                        while self.current_tts_process.poll() is None:
+                            if self.interrupt_requested:
+                                logger.warning("Barge-in: Stopping speech immediately")
+                                self.current_tts_process.kill()
+                                self.log("Interrupted - Listening, Sir")
+                                break
+                            time.sleep(0.05)
+
+# Clean up
                     self.is_speaking = False
                     self.stop_vad_monitor()
                     self.current_tts_process = None
@@ -2927,311 +3431,32 @@ Plain text only — no markdown, no bullet symbols, no code fences."""
                 if hasattr(self, 'dashboard'):
                     self.dashboard.push_state(mode="idle")
     def process_conversation(self, raw_text):
+        """Authoritative conversation router driven by INTENTS."""
         logger.debug(f"Processing conversation: {raw_text}")
         self.log(f"User: {raw_text}")
-        context = ""
+        text_lower = raw_text.lower().strip()
 
-        # Intent Detection
-        text_lower = raw_text.lower()
-
-        # Handle pending confirmations first ("yes"/"no" flows).
-        if hasattr(self, "check_pending_confirmation") and self.check_pending_confirmation(raw_text):
+        # 1) Highest priority: confirmation continuations.
+        if self.check_pending_confirmation(raw_text):
             return
 
-        # Resolve contextual short-key commands before generic intent routing.
-        if hasattr(self, "_handle_contextual_command") and self._handle_contextual_command(raw_text):
+        # 2) Explicit short-key resolver (e1/wr1/c1...).
+        if self._handle_contextual_command(raw_text):
             return
 
-        # Deterministic routing for live test command set.
-        if any(p in text_lower for p in ["analyse your main file", "analyze the main file", "analyze the config file", "optimisation summary", "optimization summary"]) and ("report" in text_lower or "summary" in text_lower or "create" in text_lower):
-            self.handle_optimization_request(raw_text)
+        # 3) Context-follow-up resolver ("reply to that", "mark that handled").
+        if self._route_by_context(raw_text, text_lower):
             return
 
-        if ("search the web for" in text_lower) or text_lower.startswith("search for ") or text_lower.startswith("google "):
-            self.handle_web_search(raw_text)
+        # 4) INTENTS table as single source of truth.
+        intent_name, intent_cfg, handler = self._match_intent(raw_text)
+        if intent_name and handler:
+            logger.debug(f"Intent matched: {intent_name} -> {handler.__name__}")
+            self._dispatch_intent(intent_name, intent_cfg, handler, raw_text)
             return
 
-        if "dig deeper into" in text_lower:
-            # handled by contextual resolver if key is valid
-            self._handle_contextual_command(raw_text)
-            return
-
-        if ("summarize my emails" in text_lower) or ("summarise my emails" in text_lower):
-            self.handle_email_summary_request()
-            return
-
-        if ("find emails from" in text_lower) or ("search emails from" in text_lower):
-            self.handle_email_search_request(raw_text)
-            return
-
-        if any(k in text_lower for k in ["task", "remind me", "what's on my list", "what is on my list", "mark task", "list tasks"]):
-            self.handle_task_request(raw_text)
-            return
-        
-        # Clean up search queries - remove command phrases
-        def clean_search_query(text):
-            remove_phrases = [
-                "search the web for", "search the word for", "search for", 
-                "google for", "google", "look up", "find out about", "find",
-                "tell me about", "what is", "who is", "what are"
-            ]
-            cleaned = text.lower()
-            for phrase in remove_phrases:
-                cleaned = cleaned.replace(phrase, "")
-            return cleaned.strip()
-        
-        # Enhanced Intent Detection: Memory-based queries
-        if "who are you" in text_lower or "what do you know about me" in text_lower or "tell me about yourself" in text_lower:
-            logger.debug("Intent: Self-Knowledge (pulling from memory)")
-            memory_facts = "\n".join(self.memory.get("facts", []))
-            context = f"JARVIS MEMORY:\n{memory_facts}"
-        # Dogzilla project queries
-        elif "dogzilla" in text_lower:
-            logger.debug("Intent: Dogzilla Project Knowledge")
-            dogzilla = self.memory.get("projects", {}).get("dogzilla", {})
-            context = f"""DOGZILLA PROJECT:
-Name: {dogzilla.get('name', 'Dogzilla')}
-Type: {dogzilla.get('type', 'ESP32-based robotics project')}
-Description: {dogzilla.get('description', 'Mobile robotics platform')}
-Status: {dogzilla.get('status', 'Active Development')}
-Components: {', '.join(dogzilla.get('components', []))}"""
-        # Weather queries - add location automatically
-        elif "weather" in text_lower:
-            self.status_var.set("Status: Searching Google...")
-            logger.debug("Intent: Weather Search")
-            search_query = f"weather in {LOCATION_OVERRIDE} today"
-            context = self.google_search(search_query)
-            
-            # Push weather context to dashboard
-            if hasattr(self, 'dashboard') and context:
-                focus_content = f"Weather in {LOCATION_OVERRIDE}:\n\n{context[:300]}"
-                self.dashboard.push_focus(
-                    content_type="docs",
-                    title="Weather Search",
-                    content=focus_content
-                )
-        elif "search" in text_lower or "who is" in text_lower or "what is" in text_lower or "find" in text_lower or "google" in text_lower:
-            self.status_var.set("Status: Searching Google...")
-            logger.debug("Intent: Google Search")
-            cleaned_query = clean_search_query(raw_text)
-            logger.debug(f"Cleaned query: '{cleaned_query}' from '{raw_text}'")
-            context = self.google_search(cleaned_query)
-            
-            # Push search context to dashboard
-            if hasattr(self, 'dashboard') and context:
-                focus_content = f"Search Query: {cleaned_query}\n\nResults:\n{context[:300]}"
-                self.dashboard.push_focus(
-                    content_type="docs",
-                    title="Web Search - " + cleaned_query[:30],
-                    content=focus_content
-                )
-        elif "calendar" in text_lower or "schedule" in text_lower:
-            self.status_var.set("Status: Checking Calendar...")
-            logger.debug("Intent: Calendar")
-            context = self.get_calendar()
-            
-            # Push calendar context to dashboard
-            if hasattr(self, 'dashboard') and context:
-                focus_content = f"Calendar Events:\n\n{context[:300]}"
-                self.dashboard.push_focus(
-                    content_type="docs",
-                    title="Calendar Events",
-                    content=focus_content
-                )
-        
-        # REPORT RETRIEVAL - Get last optimization report from memory
-        elif (("open" in text_lower or "show" in text_lower or "read" in text_lower or "summarize" in text_lower or "summary" in text_lower) and 
-              ("last" in text_lower or "latest" in text_lower or "recent" in text_lower) and 
-              ("report" in text_lower or "optimization" in text_lower or "document" in text_lower)):
-            logger.debug("Intent: Retrieve Last Report from Memory")
-            self.log("📄 Retrieving last optimization report...")
-            self.handle_report_retrieval(raw_text)
-            return
-        
-        # OPTIMIZATION INTENT HANDLER - Scribe Capabilities (File Analysis)
-        elif (("check" in text_lower and "file" in text_lower and ("write" in text_lower or "doc" in text_lower)) or
-              ("analyze" in text_lower and "file" in text_lower) or
-              ("optimize" in text_lower and "file" in text_lower) or
-              ("check" in text_lower and "main" in text_lower and "write" in text_lower) or
-              ("check" in text_lower and "config" in text_lower and "write" in text_lower)):
-            logger.debug("Intent: Code Optimization Analysis (Scribe Workflow)")
-            self.log("🧠 Starting optimization analysis workflow...")
-            self.handle_optimization_request(raw_text)
-            # After handling optimization request, don't continue to brain
-            return
-        
-        # EMAIL SUMMARY HANDLER - Summarize recent emails from n8n workflow
-        elif (("summarize" in text_lower or "summary" in text_lower or "read" in text_lower or "show" in text_lower) and 
-              ("email" in text_lower or "emails" in text_lower or "mail" in text_lower)):
-            logger.debug("Intent: Email Summary from n8n workflow")
-            self.log("📧 Retrieving email summary...")
-            self.handle_email_summary_request()
-            return
-        
-        # EMAIL SEARCH HANDLER - Search for emails from specific person
-        elif (("search" in text_lower or "find" in text_lower or "look for" in text_lower) and 
-              ("email" in text_lower or "mail from" in text_lower or "message from" in text_lower)):
-            logger.debug("Intent: Search emails by person")
-            self.log("🔍 Searching emails...")
-            self.handle_email_search_request(raw_text)
-            return
-        
-        # EMAIL REPLY HANDLER - Reply to recent email
-        elif (("reply" in text_lower or "respond" in text_lower or "answer" in text_lower) and 
-              ("email" in text_lower or "mail" in text_lower or ("last" in text_lower and "message" in text_lower))):
-            logger.debug("Intent: Reply to email")
-            self.log("✉️ Preparing email reply...")
-            self.handle_email_reply_request(raw_text)
-            return
-
-        # --- IMPROVED BRAIN LOGIC WITH CONTEXT AND MEMORY ---
-        context_history = self.get_context_history()
-        memory_facts = "\n".join(self.memory.get("facts", []))
-        
-        # Extract Master Profile for health-conscious communication
-        master_profile = self.memory.get("master_profile", {})
-        working_method = master_profile.get("working_method", "")
-        communication_style = master_profile.get("communication_style", "")
-        health_profile = master_profile.get("health_profile", {})
-        
-        # Check for project mention and auto-switch if detected
-        self.detect_and_switch_project(raw_text)
-        
-        if context:
-            # If we have external data, use it with context and memory
-            vault_path = self.vault_root.replace('\\', '/')
-            prompt = f"""
-SYSTEM: You are Jarvis, a helpful voice assistant serving Spencer.
-Location: {LOCATION_OVERRIDE}
-
-SPENCER'S PROFILE:
-- Working Method: {working_method}
-- Communication Style: {communication_style}
-- Health: Manages chronic pain and anxiety
-
-PROJECT VAULT ACCESS:
-- You have access to Spencer's Project Vault at {vault_path}
-- Currently focused on: [{self.active_project}]
-- You can read files and search across projects when asked
-- All file access is read-only for security
-
-FACTS ABOUT YOUR MASTER:
-{memory_facts}
-
-{context_history}
-
-LIVE DATA:
-{context}
-
-USER QUESTION: {raw_text}
-
-RESPONSE GUIDELINES:
-- Keep responses concise and low-friction (Spencer prefers brevity)
-- Be health-conscious in your language
-- Answer based on the provided data
-- Use vault tools (list_vault_projects, read_project_file, search_vault) when asked about projects
-- Natural, conversational tone suitable for voice delivery
-- When discussing code, use clear Markdown formatting for readability
-- Do not append status footers (location/brain/ready) unless explicitly asked
-"""
-        else:
-            # Normal conversation with context and memory
-            vault_path = self.vault_root.replace('\\', '/')
-            prompt = f"""
-SYSTEM: You are Jarvis, a helpful voice assistant speaking to Spencer.
-Location: {LOCATION_OVERRIDE}
-
-SPENCER'S PROFILE:
-- Working Method: {working_method}
-- Communication Style: {communication_style}
-- Health: Manages chronic pain and anxiety
-
-PROJECT VAULT ACCESS:
-- You have access to Spencer's Project Vault at {vault_path}
-- Currently focused on: [{self.active_project}]
-- You can read files and search across projects when asked
-- All file access is read-only for security
-
-FACTS ABOUT YOUR MASTER:
-{memory_facts}
-
-{context_history}
-
-USER: {raw_text}
-
-RESPONSE GUIDELINES:
-- Keep responses concise and low-friction (Spencer prefers brevity)
-- Be health-conscious in your language
-- Answer naturally and conversationally
-- Use vault tools (list_vault_projects, read_project_file, search_vault) when asked about projects
-- Keep responses suitable for voice delivery
-- When discussing code, use clear Markdown formatting for readability on 4-screen setup
-- Do not append status footers (location/brain/ready) unless explicitly asked
-"""
-        
-        self.status_var.set("Status: Thinking...")
-        try:
-            logger.debug(f"Sending request to LLM: {BRAIN_URL}")
-            started_at = time.time()
-            response = requests.post(BRAIN_URL, json={"model": LLM_MODEL, "prompt": prompt, "stream": False})
-            if hasattr(self, 'dashboard') and self.dashboard:
-                self.dashboard.set_last_ollama_response_time(
-                    int((time.time() - started_at) * 1000)
-                )
-            answer = response.json().get('response', "I encountered an error thinking.")
-            self.log(f"Jarvis: {answer}")
-            self.speak_with_piper(answer)
-            
-            # Push conversation context to dashboard focus window
-            if hasattr(self, 'dashboard'):
-                focus_content = f"User: {raw_text[:120]}\n\nJarvis: {answer[:260]}"
-                self.dashboard.push_focus(
-                    content_type="docs" if context else "docs",
-                    title="Latest Conversation",
-                    content=focus_content
-                )
-            
-            # Update short-term context buffer with this exchange
-            self.add_to_context("User", raw_text)
-            self.add_to_context("Jarvis", answer)
-            
-            # Log conversation interaction to persistent memory
-            self.log_vault_action(
-                action_type="conversation",
-                description=f"Conversation: {raw_text[:50]}{'...' if len(raw_text) > 50 else ''}",
-                metadata={
-                    "user_query": raw_text,
-                    "response_preview": answer[:100] if len(answer) > 100 else answer,
-                    "response_length": len(answer),
-                    "context_used": bool(context)
-                }
-            )
-            
-            # Check health: Proactively suggest breaks
-            self.interaction_count += 1
-            if self.health_intervener():
-                self.log("💊 Proposing a health break...")
-                # Don't speak immediately, just log the suggestion for next interaction
-            
-            # Save memory periodically
-            self.save_memory()
-            
-            # Process notification queue (routine updates)
-            if self.notification_queue:
-                self.log("📩 Processing routine notifications...")
-                notification_summary = "While you were busy, I received: "
-                for notif in self.notification_queue:
-                    notification_summary += f"{notif['source']}: {notif['message'][:50]}. "
-                self.notification_queue = []  # Clear queue
-                # Speak the summary (with echo-fix delay already applied)
-                time.sleep(0.2)  # Brief pause before reading notifications
-                self.speak_with_piper(notification_summary)
-            
-            self.last_interaction_time = time.time()
-            logger.debug("Conversation processed successfully")
-        except Exception as e:
-            self.log(f"Brain Error: {e}")
-            logger.error(f"Brain processing failed: {e}", exc_info=True)
+        # 5) Fallback to general LLM conversation.
+        self.fallback_to_llm(raw_text)
 
     def cleanup_audio_resources(self):
         """Safely cleanup audio resources to prevent device lock."""
@@ -3326,6 +3551,7 @@ RESPONSE GUIDELINES:
             detection_attempts = 0
 
             while self.is_listening:
+                self._refresh_command_capture_state()
                 # Safety check - verify objects still exist
                 if self.porcupine is None:
                     logger.error("Porcupine became None during loop - exiting")
@@ -3386,6 +3612,10 @@ RESPONSE GUIDELINES:
                         self.log("👂 Wake word detected!")
                         logger.info(f"Wake word detected (index: {keyword_index}) after {detection_attempts} frames")
                         detection_attempts = 0
+                        self._start_command_capture()
+                        if self.is_speaking:
+                            self.interrupt_requested = True
+                            logger.info("Wake word: interrupting active speech to prioritize command capture")
                         
                         # Update dashboard: switch to listening mode
                         if hasattr(self, 'dashboard'):
@@ -3403,9 +3633,11 @@ RESPONSE GUIDELINES:
                         if transcribed_text:
                             # Process the conversation
                             self.process_conversation(transcribed_text)
+                            self._end_command_capture()
                         else:
                             self.log("⚠️  No command heard")
                             self.status_var.set("Status: Monitoring...")
+                            self._end_command_capture()
                         
                 except Exception as e:
                     logger.error(f"Error processing audio frame: {e}")
@@ -3421,6 +3653,7 @@ RESPONSE GUIDELINES:
             logger.error(f"Full traceback:\n{traceback.format_exc()}")
             self.status_var.set("Status: Error - Check Console")
         finally:
+            self._end_command_capture()
             logger.debug("Wake word loop cleanup starting")
             self.cleanup_audio_resources()
     
@@ -3977,3 +4210,4 @@ if __name__ == "__main__":
         print(f"\nError: {e}")
     finally:
         print("Jarvis GT2 stopped.")
+

@@ -54,6 +54,69 @@ function SyntaxHighlight({ code }: { code: string }) {
   );
 }
 
+function renderInlineMarkdown(text: string) {
+  const parts: Array<string | JSX.Element> = [];
+  const linkRegex = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let idx = 0;
+
+  while ((match = linkRegex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+    parts.push(
+      <a
+        key={`link-${idx}`}
+        href={match[2]}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="underline decoration-cyan-400/70 text-cyan-300 hover:text-cyan-200"
+      >
+        {match[1]}
+      </a>
+    );
+    lastIndex = match.index + match[0].length;
+    idx += 1;
+  }
+
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+
+  return parts;
+}
+
+function MarkdownLite({ content }: { content: string }) {
+  const lines = content.split("\n");
+  return (
+    <div className="space-y-2 text-sm text-foreground/85 leading-relaxed">
+      {lines.map((line, i) => {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          return <div key={i} className="h-2" />;
+        }
+        if (trimmed.startsWith("### ")) {
+          return (
+            <h3 key={i} className="text-[13px] font-semibold text-cyan-300 tracking-wide">
+              {renderInlineMarkdown(trimmed.slice(4))}
+            </h3>
+          );
+        }
+        if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+          return (
+            <div key={i} className="flex gap-2">
+              <span className="text-cyan-300 mt-[1px]">•</span>
+              <span>{renderInlineMarkdown(trimmed.slice(2))}</span>
+            </div>
+          );
+        }
+        return <p key={i}>{renderInlineMarkdown(line)}</p>;
+      })}
+    </div>
+  );
+}
+
 export function FocusWindow({ content }: FocusWindowProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const resolvedContent: FocusContent = content ?? {
@@ -114,13 +177,11 @@ export function FocusWindow({ content }: FocusWindowProps) {
           <SyntaxHighlight code={resolvedContent.content} />
         ) : resolvedContent.type === "email" ? (
           <div className="space-y-3">
-            <div className="text-sm text-foreground/90">{resolvedContent.content}</div>
+            <MarkdownLite content={resolvedContent.content} />
           </div>
         ) : (
           <div className="prose prose-sm prose-invert max-w-none">
-            <div className="text-sm text-foreground/80 leading-relaxed whitespace-pre-wrap">
-              {resolvedContent.content}
-            </div>
+            <MarkdownLite content={resolvedContent.content} />
           </div>
         )}
       </div>
