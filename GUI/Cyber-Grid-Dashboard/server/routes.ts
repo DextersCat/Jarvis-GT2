@@ -38,7 +38,7 @@ export async function registerRoutes(
     mode: "idle",
     gamingMode: false,
     muteMic: false,
-    conversationalMode: true,
+    conversationalMode: false,
   };
 
   let logs: Array<{ id: string; timestamp: string; level: string; message: string }> = [];

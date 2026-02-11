@@ -154,6 +154,7 @@ def load_config():
     llm_model = os.getenv("LLM_MODEL") or config.get("llm_model", "llama3.1:8b")
     piper_exe = os.getenv("PIPER_EXE") or config.get("piper_exe")
     perplexity_api_key = os.getenv("PERPLEXITY_API_KEY") or config.get("perplexity_api_key")
+    news_api_key = os.getenv("NEWS_API_KEY") or config.get("news_api_key")
     
     # VAD Settings for barge-in and adaptive listening
     # Environment variables take priority over config.json
@@ -182,6 +183,7 @@ def load_config():
         "llm_model": llm_model,
         "piper_exe": piper_exe,
         "perplexity_api_key": perplexity_api_key,
+        "news_api_key": news_api_key,
         "vad_settings": vad_settings
     }
 
@@ -198,6 +200,7 @@ GOOGLE_DRIVE_FOLDER_SOURCE_DOC_ID = config_dict["google_drive_folder_source_doc_
 OWNER_EMAIL = config_dict["owner_email"]
 BRAIN_URL = config_dict["brain_url"]
 PERPLEXITY_API_KEY = config_dict.get("perplexity_api_key")
+NEWS_API_KEY = config_dict.get("news_api_key")
 LLM_MODEL = config_dict["llm_model"]
 VAD_SETTINGS = config_dict["vad_settings"]
 
@@ -303,6 +306,10 @@ INTENTS = {
     "EMAIL_MANAGEMENT": {
         "keywords": ["archive", "bin it", "trash it", "delete that email", "mark handled", "mark as read"],
         "handler": "handle_email_management_request", "name": "manage an email"
+    },
+    "NEWS": {
+        "keywords": ["news", "headline", "headlines", "morning briefing", "uk news", "today's news", "news today"],
+        "handler": "handle_news_request", "name": "get news headlines"
     },
     "WEB_SEARCH": {"keywords": ["search", "who is", "what is", "find", "google"], "handler": "handle_web_search", "name": "search the web"}
 }
@@ -1458,6 +1465,24 @@ Summary (concise, action-item focused):"""
                 self.dashboard.push_focus("email", f"[{alias}] {label}", content)
                 self.speak_with_piper(f"Showing {alias}.")
                 return True
+            if item_type == 'news':
+                url = meta.get('url')
+                source = (meta.get('source') or {}).get('name', 'Unknown Source') if isinstance(meta.get('source'), dict) else 'Unknown Source'
+                description = meta.get('description') or meta.get('content') or '(No preview available)'
+                content = (
+                    f"### {label}\n"
+                    f"Source: {source}\n\n"
+                    f"{description}\n\n"
+                    f"{('[Open Link](' + url + ')') if url else 'Open Link unavailable'}"
+                )
+                if open_web and url:
+                    import webbrowser
+                    webbrowser.open(url)
+                    self.speak_with_piper(f"Opening {label}.")
+                else:
+                    self.dashboard.push_focus("docs", f"[{alias}] {label}", content)
+                    self.speak_with_piper(f"Showing {alias}.")
+                return True
 
             self.speak_with_piper(f"I couldn't display {alias}.")
             return True
@@ -1474,7 +1499,9 @@ Summary (concise, action-item focused):"""
             "nine": 9, "ninth": 9,
             "ten": 10, "tenth": 10,
             # Common Whisper homophones/mis-hearings
-            "for": 4, "to": 2, "too": 2, "won": 1, "ate": 8
+            "for": 4, "to": 2, "too": 2, "won": 1, "ate": 8,
+            # Explicit natural phrase variants
+            "news one": 1, "web result two": 2
         }
         ordinal_tokens_pattern = (
             r"\d+|one|first|two|second|three|third|four|fourth|five|fifth|six|sixth|"
@@ -1505,14 +1532,14 @@ Summary (concise, action-item focused):"""
 
             # Natural ordinal support: "web result one", "email 2", "the first result"
             m_nat = re.search(
-                rf"\b(?:the\s+)?(web|email|result|code|doc|document|analysis|report)\s*(?:result\s*)?({ordinal_tokens_pattern})\b",
+                rf"\b(?:the\s+)?(news|web|email|result|code|doc|document|analysis|report)\s*(?:result\s*)?({ordinal_tokens_pattern})\b",
                 phrase
             )
             if not m_nat:
-                m_nat = re.search(rf"\b(?:the\s+)?({ordinal_tokens_pattern})\s+result\b", phrase)
+                m_nat = re.search(rf"\b(?:the\s+)?({ordinal_tokens_pattern})\s+(news\s+)?result\b", phrase)
                 if not m_nat:
                     return None
-                kind = "result"
+                kind = "news" if m_nat.group(2) else "result"
                 token = m_nat.group(1)
             else:
                 kind = m_nat.group(1)
@@ -1531,6 +1558,8 @@ Summary (concise, action-item focused):"""
                 desired_type = "w"
             elif kind == "email":
                 desired_type = "e"
+            elif kind == "news":
+                desired_type = "news"
             elif kind in ("code",):
                 desired_type = "c"
             elif kind in ("doc", "document", "analysis", "report"):
@@ -1540,6 +1569,8 @@ Summary (concise, action-item focused):"""
                     desired_type = "w"
                 elif self.last_intent == "email":
                     desired_type = "e"
+                elif self.last_intent == "news":
+                    desired_type = "news"
                 elif self.last_intent == "optimization":
                     desired_type = "c"
 
@@ -1628,7 +1659,7 @@ Summary (concise, action-item focused):"""
         # - "web result 3" -> deep dive that web result
         # - "email 2" / "doc 1" / "code 1" / "result 2" -> present item
         m = re.fullmatch(
-            rf'\s*(?:the\s+)?(?:web|email|result|code|doc|document|analysis|report)?\s*(?:result\s*)?({ordinal_tokens_pattern})\s*',
+            rf'\s*(?:the\s+)?(?:news|web|email|result|code|doc|document|analysis|report)?\s*(?:result\s*)?({ordinal_tokens_pattern})\s*',
             text
         )
         if m:
@@ -1731,6 +1762,82 @@ Summary (concise, action-item focused):"""
         spoken_summary = self.call_smart_model(summary_prompt, timeout=90)
         self.speak(spoken_summary)
         self.last_intent = "search"
+
+    def handle_news_request(self, query):
+        """Fetch top UK headlines via NewsAPI and present them as contextual items."""
+        if not NEWS_API_KEY:
+            self.speak_with_piper("News API key is missing. Please set NEWS_API_KEY in your environment.")
+            return
+
+        self.speak_with_piper("Fetching the latest UK headlines now.")
+        try:
+            resp = requests.get(
+                "https://newsapi.org/v2/top-headlines",
+                params={"country": "gb", "pageSize": 5, "apiKey": NEWS_API_KEY},
+                timeout=20
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            articles = payload.get("articles", [])[:5]
+
+            if not articles:
+                self.speak_with_piper("I couldn't find any UK headlines right now.")
+                return
+
+            if hasattr(self, "session_context") and self.session_context:
+                self.session_context.clear()
+                if not hasattr(self.session_context, "results") or not isinstance(getattr(self.session_context, "results"), dict):
+                    self.session_context.results = {}
+                # Full raw result objects for contextual resolver.
+                self.session_context.results["news"] = [
+                    {"type": "news", **article} for article in articles
+                ]
+
+            cards = []
+            summary_seed = []
+            for idx, article in enumerate(articles, 1):
+                title = (article.get("title") or "Untitled").strip()
+                snippet = self._two_sentence_snippet(
+                    article.get("description") or article.get("content") or "No summary available."
+                )
+                url = article.get("url", "")
+
+                self.session_context.add_item(
+                    full_key=f"{datetime.now().strftime('%Y%m%d')}-n{idx}",
+                    label=title,
+                    item_type="news",
+                    metadata=article
+                )
+
+                md_link = f"[Open Link]({url})" if url else "Open Link unavailable"
+                cards.append(
+                    f"### [NEWS {idx}] {title}\n"
+                    f"{snippet}\n\n"
+                    f"{md_link}\n"
+                )
+                summary_seed.append(f"{idx}. {title} — {snippet}")
+
+            focus_content = "\n\n".join(cards)
+            self.dashboard.push_focus("docs", "UK Headlines", focus_content)
+            # Explicit ticker sync for news keys.
+            if hasattr(self.dashboard, "push_news_ticker"):
+                self.dashboard.push_news_ticker(articles)
+            else:
+                self.dashboard.update_ticker(self.session_context.get_all_items_for_ticker())
+
+            briefing_prompt = (
+                "Create a Morning Briefing for Spencer.\n"
+                "First: exactly 2 concise sentences describing the overall vibe of today's UK headlines.\n"
+                "Then: list the top 3 headlines by name as bullets.\n\n"
+                f"Headlines:\n{chr(10).join(summary_seed)}"
+            )
+            briefing = self.call_smart_model(briefing_prompt, timeout=90)
+            self.speak(briefing)
+            self.last_intent = "news"
+
+        except Exception as e:
+            logger.error(f"News fetch failed: {e}", exc_info=True)
+            self.speak_with_piper("I had trouble fetching the UK headlines.")
 
     def handle_deep_dig(self, alias: str) -> bool:
         """Analyze a web result referenced by short key (wr*), then store as d*."""
@@ -1982,6 +2089,11 @@ Plain text only — no markdown, no bullet symbols, no code fences."""
         # Search follow-ups.
         if self.last_intent == "search":
             if "dig deeper" in text_lower or "open wr" in text_lower or "show wr" in text_lower:
+                return self._handle_contextual_command(raw_text)
+
+        # News follow-ups.
+        if self.last_intent == "news":
+            if any(w in text_lower for w in ["news", "headline", "result", "open n", "show n", "first", "second", "third", "fourth", "fifth"]):
                 return self._handle_contextual_command(raw_text)
 
         # Optimization/report follow-ups.

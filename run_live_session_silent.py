@@ -122,6 +122,9 @@ def build_jarvis_for_silent_tests():
     j.reply_to_email = MagicMock(return_value=True)
     j.archive_email = MagicMock(return_value=True)
     j.trash_email = MagicMock(return_value=True)
+    j.dashboard.push_news_ticker = lambda headlines: j.dashboard.update_ticker(
+        [{"short_key": f"News {idx}", "label": (h.get("title") or "Untitled")} for idx, h in enumerate(headlines[:10], 1)]
+    )
 
     return j
 
@@ -180,6 +183,26 @@ def run():
     j.process_conversation("show e1")
     flow_35 = any(ct == "email" and "[e1]" in title.lower() for ct, title, _ in j.dashboard.focus_calls)
     results.append(("Test 3.5: Flow 7 (Email Search -> Display)", flow_35))
+
+    # 3.6 Flow 8 (News Intent -> Ticker/Focus -> Natural Selection)
+    with patch("jarvis_main.NEWS_API_KEY", "test-news-key"), patch("jarvis_main.requests.get") as mock_news_get:
+        mock_news_get.return_value.raise_for_status = lambda: None
+        mock_news_get.return_value.json.return_value = {
+            "status": "ok",
+            "articles": [
+                {"title": "UK growth ticks up", "description": "Economy edges higher.", "url": "https://example.com/n1", "source": {"name": "BBC"}},
+                {"title": "Climate bill debated", "description": "Parliament discusses revisions.", "url": "https://example.com/n2", "source": {"name": "Reuters"}},
+                {"title": "NHS update released", "description": "New staffing figures published.", "url": "https://example.com/n3", "source": {"name": "Sky"}},
+                {"title": "Transport strike talks", "description": "Negotiations continue today.", "url": "https://example.com/n4", "source": {"name": "ITV"}},
+                {"title": "Energy prices steady", "description": "Regulator holds cap level.", "url": "https://example.com/n5", "source": {"name": "Guardian"}},
+            ],
+        }
+        j.process_conversation("what's the news headlines in the uk today")
+        j.process_conversation("news 1")
+    has_news_focus = any("UK Headlines" in title or "[n1]" in title.lower() for _, title, _ in j.dashboard.focus_calls)
+    has_news_ticker = any(any(item.get("short_key", "").lower().startswith("news ") for item in call) for call in j.dashboard.ticker_calls if isinstance(call, list))
+    flow_36 = has_news_focus and has_news_ticker
+    results.append(("Test 3.6: Flow 8 (News Intent -> Ticker -> Natural Select)", flow_36))
 
     all_pass = all(status for _, status in results)
     date_str = datetime.now().strftime("%B %d, %Y")

@@ -35,6 +35,10 @@
 
 * **Status**: `PASSED`
 
+### Test 3.6: Flow 8 (News Intent -> Ticker -> Natural Select)
+
+* **Status**: `PASSED`
+
 ---
 
 ## Session Summary

@@ -322,6 +322,14 @@ class DashboardBridge:
         # Log for debugging that the ticker was updated
         short_keys = [item['short_key'] for item in items]
         logger.debug(f"Pushed to ticker: {short_keys}")
+
+    def push_news_ticker(self, headlines: List[Dict[str, Any]]):
+        """Push formatted News short-keys to ticker, e.g. 'News 1', 'News 2'."""
+        items = []
+        for idx, article in enumerate(headlines[:10], 1):
+            title = str(article.get("title", "Untitled")).strip()
+            items.append({"short_key": f"News {idx}", "label": title})
+        self.update_ticker(items)
     
     def _send(self, data: Dict[str, Any]):
         """Send JSON message to dashboard."""
