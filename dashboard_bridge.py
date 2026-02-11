@@ -6,8 +6,8 @@ import json
 import threading
 import time
 import logging
-from datetime import datetime
-from typing import Optional, Dict, Any, Callable
+from datetime import datetime, date
+from typing import Optional, Dict, Any, Callable, List
 import psutil
 
 try:
@@ -43,6 +43,12 @@ class DashboardBridge:
         # State change callback (for UI control toggles)
         self.on_state_change: Optional[Callable[[str, Any], None]] = None
         
+        # One-shot metric tracking
+        self.is_transcribing = False
+        self.last_ollama_response_time = 0
+        self.last_ollama_display_time = 0.0
+        self.last_ollama_display_value = 0
+
         # State tracking
         self.current_state = {
             "mode": "idle",
@@ -139,6 +145,16 @@ class DashboardBridge:
         except Exception as e:
             logger.error(f"Error processing dashboard message: {e}")
     
+    def set_transcribing_status(self, status: bool):
+        """Set by Jarvis to indicate STT activity for NPU metric simulation."""
+        self.is_transcribing = status
+
+    def set_last_ollama_response_time(self, ms: int):
+        """Set by Jarvis after an LLM call to show response time."""
+        self.last_ollama_response_time = ms
+        self.last_ollama_display_time = time.time()
+        self.last_ollama_display_value = ms
+
     def _on_error(self, ws, error):
         """WebSocket error handler."""
         logger.debug(f"WebSocket error: {error}")
@@ -191,15 +207,31 @@ class DashboardBridge:
             if gpu_temp == 0:
                 gpu_temp = 45 + (cpu_percent * 0.3)  # 45-75°C range
             
+            # Simulated NPU usage - active only during transcription
+            npu_usage = 75 if self.is_transcribing else 0
+
+            # Ollama response time (retain briefly so UI can render it clearly)
+            ollama_ms = self.last_ollama_response_time
+            if ollama_ms > 0:
+                self.last_ollama_response_time = 0
+                self.last_ollama_display_time = time.time()
+                self.last_ollama_display_value = ollama_ms
+            elif (time.time() - self.last_ollama_display_time) <= 10:
+                ollama_ms = self.last_ollama_display_value
+            else:
+                ollama_ms = 0
+
             return {
                 "cpu": round(cpu_percent, 1),
                 "memory": round(memory_percent, 1),
                 "cpuTemp": round(cpu_temp, 1),
-                "gpuTemp": round(gpu_temp, 1)
+                "gpuTemp": round(gpu_temp, 1),
+                "npu": npu_usage,
+                "ollama": ollama_ms
             }
         except Exception as e:
             logger.error(f"Error collecting metrics: {e}")
-            return {"cpu": 0, "memory": 0, "cpuTemp": 0, "gpuTemp": 0}
+            return {"cpu": 0, "memory": 0, "cpuTemp": 0, "gpuTemp": 0, "npu": 0, "ollama": 0}
     
     def push_state(self, mode: str = None, **kwargs):
         """Push Jarvis state update to dashboard.
@@ -273,6 +305,23 @@ class DashboardBridge:
                 "content": content
             }
         })
+    
+    def update_ticker(self, items: List[Dict[str, str]]):
+        """Push ticker tape items to the dashboard.
+        
+        Args:
+            items: A list of dicts, e.g., [{"short_key": "wr1", "label": "AI News"}]
+        """
+        if not self.connected:
+            return
+        
+        self._send({
+            "type": "ticker",
+            "data": items
+        })
+        # Log for debugging that the ticker was updated
+        short_keys = [item['short_key'] for item in items]
+        logger.debug(f"Pushed to ticker: {short_keys}")
     
     def _send(self, data: Dict[str, Any]):
         """Send JSON message to dashboard."""

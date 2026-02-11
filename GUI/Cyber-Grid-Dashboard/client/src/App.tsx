@@ -8,7 +8,7 @@ import Dashboard from "@/pages/dashboard";
 import { Component, type ReactNode, useEffect } from "react";
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
-  state = { error: null };
+  state: { error: Error | null } = { error: null };
 
   static getDerivedStateFromError(error: Error) {
     return { error };

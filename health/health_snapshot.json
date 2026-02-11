@@ -1,0 +1,12 @@
+{
+  "pain": {
+    "level": 3,
+    "level_name": "Severe",
+    "timestamp": "2026-02-10T21:22:12.451435"
+  },
+  "anxiety": {
+    "level": 2,
+    "level_name": "Moderate",
+    "timestamp": "2026-02-10T21:22:12.457868"
+  }
+}

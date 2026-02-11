@@ -6,6 +6,7 @@ import { SystemGauges } from "@/components/system-gauges";
 import { FocusWindow } from "@/components/focus-window";
 import { TerminalLog } from "@/components/terminal-log";
 import { MoodTracker } from "@/components/mood-tracker";
+import { TickerTape } from "@/components/ticker-tape";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { useCallback } from "react";
 
@@ -96,6 +97,10 @@ export default function Dashboard() {
               <div className="w-full xl:w-[320px]">
                 <MoodTracker onLog={handleHealthLog} />
               </div>
+            </div>
+
+            <div className="h-10 shrink-0">
+              <TickerTape items={data.tickerItems} />
             </div>
           </main>
         </div>

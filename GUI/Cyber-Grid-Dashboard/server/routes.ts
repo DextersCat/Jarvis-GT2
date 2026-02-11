@@ -9,6 +9,8 @@ interface SystemMetrics {
   memory: number;
   gpuTemp: number;
   cpuTemp: number;
+  npu: number;
+  ollama: number;
 }
 
 interface JarvisState {
@@ -18,6 +20,10 @@ interface JarvisState {
   conversationalMode: boolean;
 }
 
+interface TickerItem {
+  short_key: string;
+  label: string;
+}
 
 
 export async function registerRoutes(
@@ -27,7 +33,7 @@ export async function registerRoutes(
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
   // Real state and data from Jarvis
-  let metrics: SystemMetrics = { cpu: 0, memory: 0, gpuTemp: 0, cpuTemp: 0 };
+  let metrics: SystemMetrics = { cpu: 0, memory: 0, gpuTemp: 0, cpuTemp: 0, npu: 0, ollama: 0 };
   let state: JarvisState = {
     mode: "idle",
     gamingMode: false,
@@ -37,6 +43,7 @@ export async function registerRoutes(
 
   let logs: Array<{ id: string; timestamp: string; level: string; message: string }> = [];
   const maxLogs = 50;  // Keep last 50 logs
+  let tickerItems: TickerItem[] = [];
 
   let currentFocus: any = {
     type: "docs",
@@ -54,6 +61,7 @@ export async function registerRoutes(
           jarvisState: state,
           logs: logs.slice(-8),  // Last 8 real logs
           focusContent: currentFocus,
+          tickerItems,
           networkStatus: "Connected",
           encryptionStatus: "AES-256",
         },
@@ -78,6 +86,9 @@ export async function registerRoutes(
           broadcast(wss, msg, ws);
         } else if (msg.type === "focus" && msg.data) {
           currentFocus = msg.data;
+          broadcast(wss, msg, ws);
+        } else if (msg.type === "ticker" && msg.data) {
+          tickerItems = msg.data;
           broadcast(wss, msg, ws);
         } else if (msg.command === "health_update") {
           // Forward health updates (pain/anxiety) to Jarvis

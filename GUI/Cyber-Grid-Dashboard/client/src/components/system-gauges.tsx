@@ -61,6 +61,24 @@ export function SystemGauges({ metrics }: SystemGaugesProps) {
           glowColor="rgba(251,146,60,0.4)"
           testId="gauge-cpu-temp"
         />
+        <CircularGauge
+          label="NPU"
+          value={metrics.npu}
+          maxValue={100}
+          unit="%"
+          color="rgb(34,197,94)"
+          glowColor="rgba(34,197,94,0.4)"
+          testId="gauge-npu"
+        />
+        <CircularGauge
+          label="GT2 -> Ollama"
+          value={metrics.ollama}
+          maxValue={5000}
+          unit="ms"
+          color="rgb(234,179,8)"
+          glowColor="rgba(234,179,8,0.4)"
+          testId="gauge-ollama"
+        />
       </div>
     </motion.div>
   );

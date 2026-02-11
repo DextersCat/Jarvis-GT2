@@ -2,7 +2,7 @@
 
 ## 🎯 What's New
 
-Jarvis now has **Scribe capabilities** - the ability to read code, analyze it with AI, and automatically write optimization reports to Google Docs.
+Jarvis now has **Scribe capabilities** - the ability to read code, analyze it with AI, and automatically write optimization reports to Google Docs. This workflow is now fully integrated with the **Visual Addressing System**.
 
 ---
 
@@ -16,6 +16,12 @@ Say any of these phrases to activate the Scribe workflow:
 ✅ "Read my main file and create a summary report"
 ✅ "Optimize the memory file and write a doc"
 ✅ "Analyze startup and write a document"
+```
+
+You can also perform follow-up actions using the generated short-key:
+```
+✅ "show c1"
+✅ "summarize c1"
 ```
 
 ---

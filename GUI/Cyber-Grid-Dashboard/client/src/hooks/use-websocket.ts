@@ -5,6 +5,8 @@ export interface SystemMetrics {
   memory: number;
   gpuTemp: number;
   cpuTemp: number;
+  npu: number;
+  ollama: number;
 }
 
 export interface JarvisState {
@@ -27,18 +29,24 @@ export interface FocusContent {
   content: string;
 }
 
+export interface TickerItem {
+  short_key: string;
+  label: string;
+}
+
 export interface DashboardData {
   metrics: SystemMetrics;
   jarvisState: JarvisState;
   logs: LogEntry[];
   focusContent: FocusContent;
+  tickerItems: TickerItem[];
   networkStatus: "5G" | "4G" | "3G" | "disconnected";
   encryptionStatus: "AES-256" | "AES-128" | "none";
   isConnected: boolean;
 }
 
 const initialData: DashboardData = {
-  metrics: { cpu: 0, memory: 0, gpuTemp: 0, cpuTemp: 0 },
+  metrics: { cpu: 0, memory: 0, gpuTemp: 0, cpuTemp: 0, npu: 0, ollama: 0 },
   jarvisState: {
     mode: "idle",
     gamingMode: false,
@@ -51,6 +59,7 @@ const initialData: DashboardData = {
     title: "Waiting for input...",
     content: "Jarvis is listening. Ask a question, request a search, or just start talking.",
   },
+  tickerItems: [],
   networkStatus: "5G",
   encryptionStatus: "AES-256",
   isConnected: false,
@@ -87,6 +96,8 @@ export function useWebSocket() {
             }));
           } else if (message.type === "focus") {
             setData((prev) => ({ ...prev, focusContent: message.data }));
+          } else if (message.type === "ticker") {
+            setData((prev) => ({ ...prev, tickerItems: message.data || [] }));
           } else if (message.type === "full") {
             setData((prev) => ({ ...prev, ...message.data, isConnected: true }));
           }
