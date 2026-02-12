@@ -166,6 +166,9 @@ def load_config():
     owner_email = os.getenv("OWNER_EMAIL") or config.get("owner_email")
     brain_url = os.getenv("BRAIN_URL") or config.get("brain_url", "http://localhost:11434/api/generate")
     llm_model = os.getenv("LLM_MODEL") or config.get("llm_model", "llama3.1:8b")
+    fast_llm_model = os.getenv("FAST_LLM_MODEL") or config.get("fast_llm_model", llm_model)
+    smart_llm_model = os.getenv("SMART_LLM_MODEL") or config.get("smart_llm_model", llm_model)
+    smart_llm_timeout = float(os.getenv("SMART_LLM_TIMEOUT", config.get("smart_llm_timeout", 5)))
     piper_exe = os.getenv("PIPER_EXE") or config.get("piper_exe")
     perplexity_api_key = os.getenv("PERPLEXITY_API_KEY") or config.get("perplexity_api_key")
     news_api_key = os.getenv("NEWS_API_KEY") or config.get("news_api_key")
@@ -195,6 +198,9 @@ def load_config():
         "owner_email": owner_email,
         "brain_url": brain_url,
         "llm_model": llm_model,
+        "fast_llm_model": fast_llm_model,
+        "smart_llm_model": smart_llm_model,
+        "smart_llm_timeout": smart_llm_timeout,
         "piper_exe": piper_exe,
         "perplexity_api_key": perplexity_api_key,
         "news_api_key": news_api_key,
@@ -216,6 +222,9 @@ BRAIN_URL = config_dict["brain_url"]
 PERPLEXITY_API_KEY = config_dict.get("perplexity_api_key")
 NEWS_API_KEY = config_dict.get("news_api_key")
 LLM_MODEL = config_dict["llm_model"]
+FAST_LLM_MODEL = config_dict.get("fast_llm_model", LLM_MODEL)
+SMART_LLM_MODEL = config_dict.get("smart_llm_model", LLM_MODEL)
+SMART_LLM_TIMEOUT = float(config_dict.get("smart_llm_timeout", 5))
 VAD_SETTINGS = config_dict["vad_settings"]
 
 # Configure logging — console at INFO, rotating file at DEBUG
@@ -419,6 +428,7 @@ class JarvisGT2:
         self.interaction_count = 0
         self.last_break_time = time.time()
         self.memory = self.load_memory()
+        self.current_llm_tier = "smart"
         
         # VAD parameters - loaded from config
         self.vad_threshold = VAD_SETTINGS.get("energy_threshold", 500)
@@ -1307,32 +1317,52 @@ Summary (concise, action-item focused):"""
             self.log(f"❌ Error summarizing emails: {e}")
             self.speak_with_piper("I encountered an error summarizing your emails.")
     
-    def call_smart_model(self, prompt, timeout=120):
+    def _call_brain_model(self, prompt: str, model_name: str, timeout: float):
+        """Call a specific model on the configured brain endpoint."""
+        started_at = time.time()
+        resp = requests.post(
+            BRAIN_URL,
+            json={"model": model_name, "prompt": prompt, "stream": False},
+            timeout=timeout
+        )
+        resp.raise_for_status()
+        elapsed_ms = int((time.time() - started_at) * 1000)
+        if hasattr(self, "dashboard") and self.dashboard:
+            self.dashboard.set_last_ollama_response_time(elapsed_ms)
+        return resp.json().get("response", "Analysis could not be completed.")
+
+    def call_smart_model(self, prompt, timeout=120, tier=None):
         """
-        Calls a high-capability model with a fallback to local Ollama.
-        The full implementation would try a primary cloud API first.
-        For this recovery, we are using the local Ollama brain directly.
+        Tiered brain call:
+        - fast tier: FAST_LLM_MODEL
+        - smart tier: SMART_LLM_MODEL with timeout-based downgrade to FAST_LLM_MODEL
         """
+        selected_tier = (tier or getattr(self, "current_llm_tier", "smart") or "smart").lower()
+        smart_timeout = min(float(timeout), float(SMART_LLM_TIMEOUT))
+        smart_like = {"smart", "web_search", "news_search", "code_optimize"}
+        fast_like = {"fast", "general_chat", "task_add"}
+
         try:
-            logger.info("Calling smart model (Ollama)...")
-            started_at = time.time()
-            resp = requests.post(
-                BRAIN_URL,
-                json={"model": LLM_MODEL, "prompt": prompt, "stream": False},
-                timeout=timeout
-            )
-            resp.raise_for_status()
-            elapsed_ms = int((time.time() - started_at) * 1000)
-            if hasattr(self, "dashboard") and self.dashboard:
-                self.dashboard.set_last_ollama_response_time(elapsed_ms)
-            logger.info("Smart model call successful.")
-            return resp.json().get('response', 'Analysis could not be completed.')
+            if selected_tier in fast_like:
+                logger.info(f"Calling fast-tier model ({FAST_LLM_MODEL})...")
+                return self._call_brain_model(prompt, FAST_LLM_MODEL, timeout)
+
+            # Default to smart path.
+            logger.info(f"Calling smart-tier model ({SMART_LLM_MODEL})...")
+            try:
+                return self._call_brain_model(prompt, SMART_LLM_MODEL, smart_timeout)
+            except requests.exceptions.Timeout:
+                logger.warning("Note: Using fast-tier fallback for speed.")
+                self.log("Note: Using fast-tier fallback for speed.")
+                fallback_timeout = max(3.0, float(timeout) - float(smart_timeout))
+                logger.info(f"Downgrading to fast-tier model ({FAST_LLM_MODEL})...")
+                return self._call_brain_model(prompt, FAST_LLM_MODEL, fallback_timeout)
         except requests.exceptions.RequestException as e:
             logger.error(f"call_smart_model failed to connect to BRAIN_URL: {e}")
             return f"Error: I was unable to connect to my AI brain at {BRAIN_URL}."
         except Exception as e:
             logger.error(f"call_smart_model encountered an unexpected error: {e}", exc_info=True)
-            return f"An unexpected error occurred while I was thinking."
+            return "An unexpected error occurred while I was thinking."
 
     def handle_email_search_request(self, user_request):
         """
@@ -2388,13 +2418,28 @@ Plain text only — no markdown, no bullet symbols, no code fences."""
         return best
 
     def _dispatch_intent(self, intent_name, intent_cfg, handler, raw_text):
-        """Dispatch the matched intent handler with proper signature handling."""
+        """Dispatch the matched intent handler with tier-aware model routing."""
+        previous_tier = getattr(self, "current_llm_tier", "smart")
+        intent_upper = (intent_name or "").upper()
+        text_lower = (raw_text or "").lower()
+
+        # Multi-tier routing policy.
+        if intent_upper in {"WEB_SEARCH", "NEWS", "CODE_OPTIMIZATION"}:
+            self.current_llm_tier = "smart"
+        elif intent_upper == "TASK" and any(
+            token in text_lower for token in ["add", "remind", "remember to", "note to self", "task"]
+        ):
+            self.current_llm_tier = "task_add"
+
         # Handlers with no user_request parameter.
         noarg_handlers = {"handle_email_summary_request"}
-        if handler.__name__ in noarg_handlers:
-            handler()
-            return
-        handler(raw_text)
+        try:
+            if handler.__name__ in noarg_handlers:
+                handler()
+                return
+            handler(raw_text)
+        finally:
+            self.current_llm_tier = previous_tier
     
     def add_to_context(self, role, message):
         """Add message to short-term context buffer."""
@@ -2497,18 +2542,8 @@ RESPONSE GUIDELINES:
 
         self.status_var.set("Status: Thinking...")
         try:
-            logger.debug(f"Sending request to LLM: {BRAIN_URL}")
-            started_at = time.time()
-            response = requests.post(
-                BRAIN_URL,
-                json={"model": LLM_MODEL, "prompt": prompt, "stream": False}
-            )
-            if hasattr(self, 'dashboard') and self.dashboard:
-                self.dashboard.set_last_ollama_response_time(
-                    int((time.time() - started_at) * 1000)
-                )
-
-            answer = response.json().get('response', "I encountered an error thinking.")
+            logger.debug(f"Sending general chat request to fast-tier LLM via {BRAIN_URL}")
+            answer = self.call_smart_model(prompt, timeout=45, tier="general_chat")
             self.log(f"Jarvis: {answer}")
             self.speak_with_piper(answer)
 
@@ -2717,7 +2752,7 @@ RESPONSE GUIDELINES:
             self.speak_with_piper("I had trouble refreshing the project index.")
 
     def handle_file_search(self, user_request):
-        """Search project files, with MemoryIndex-first and vault quick-scan fallback."""
+        """Search project files using semantic-first retrieval with compact brain-side summary."""
         text = (user_request or "").strip()
         query = text
         for prefix in [
@@ -2732,22 +2767,13 @@ RESPONSE GUIDELINES:
             return
 
         hits = []
-        try:
-            action_hits = self.memory_index.search_by_keyword(query, limit=15) if self.memory_index else []
-            for action in action_hits:
-                meta = action.get("metadata", {}) if isinstance(action, dict) else {}
-                candidate = meta.get("filename") or meta.get("file_path") or meta.get("path")
-                if not candidate:
-                    continue
-                if os.path.exists(candidate):
-                    hits.append({"path": candidate, "name": os.path.basename(candidate)})
-        except Exception:
-            hits = []
-
-        # Semantic fallback: cosine similarity over vault semantic embeddings.
-        if not hits and self.vault and hasattr(self.vault, "semantic_search"):
+        # Primary path: semantic retrieval (NPU/OpenVINO when available in VaultReference).
+        if self.vault and hasattr(self.vault, "semantic_search"):
             try:
                 semantic_hits = self.vault.semantic_search(query, limit=10)
+                emb_backend = getattr(self.vault, "embedding_backend", "unknown")
+                emb_device = getattr(self.vault, "embedding_device", "unknown")
+                logger.info(f"Vault semantic search backend={emb_backend} device={emb_device}")
                 for sh in semantic_hits:
                     path = sh.get("path")
                     if path:
@@ -2759,7 +2785,21 @@ RESPONSE GUIDELINES:
             except Exception as e:
                 logger.error(f"Vault semantic_search failed: {e}")
 
-        # Smart fallback: if semantic has no hits, do quick filesystem scan.
+        # Secondary fallback: memory index filename/path hints.
+        if not hits:
+            try:
+                action_hits = self.memory_index.search_by_keyword(query, limit=15) if self.memory_index else []
+                for action in action_hits:
+                    meta = action.get("metadata", {}) if isinstance(action, dict) else {}
+                    candidate = meta.get("filename") or meta.get("file_path") or meta.get("path")
+                    if not candidate:
+                        continue
+                    if os.path.exists(candidate):
+                        hits.append({"path": candidate, "name": os.path.basename(candidate)})
+            except Exception:
+                hits = []
+
+        # Final fallback: quick filesystem scan.
         if not hits and self.vault and hasattr(self.vault, "quick_scan"):
             try:
                 quick = self.vault.quick_scan(query, limit=10)
@@ -2813,9 +2853,38 @@ RESPONSE GUIDELINES:
             score_line = f"Similarity: {score:.2f}\n" if isinstance(score, (float, int)) else ""
             cards.append(f"### [c{idx}] {name}\n{score_line}Path: `{path}`\n")
 
+        # NPU semantic bridge optimization: only send top-3 snippets to the brain.
+        snippet_lines = []
+        for idx, h in enumerate(unique[:3], 1):
+            path = h["path"]
+            name = h["name"]
+            snippet = ""
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    snippet = " ".join(f.read(300).split())
+            except Exception:
+                snippet = "(snippet unavailable)"
+            snippet_lines.append(f"[c{idx}] {name}\nPath: {path}\nSnippet: {snippet}")
+
+        query_brief = ""
+        if snippet_lines:
+            brief_prompt = (
+                "You are assisting with local project file retrieval. "
+                "Given the user query and ONLY these top matches, answer in 1-2 concise sentences: "
+                "which file is most likely best and why. "
+                "Do not invent files.\n\n"
+                f"User query: {query}\n\n"
+                "Top matches:\n"
+                + "\n\n".join(snippet_lines)
+            )
+            query_brief = self.call_smart_model(brief_prompt, timeout=20, tier="fast")
+
         self.dashboard.push_focus("docs", f"Vault Search: {query}", "\n\n".join(cards))
         self.dashboard.update_ticker(self.session_context.get_all_items_for_ticker())
-        self.speak_with_piper(f"I found {len(unique)} file results. You can say read c1.")
+        if query_brief and not str(query_brief).startswith("Error:"):
+            self.speak_with_piper(f"{query_brief} You can say read c1.")
+        else:
+            self.speak_with_piper(f"I found {len(unique)} file results. You can say read c1.")
         self.last_intent = "optimization"
     
     def detect_and_switch_project(self, text):
@@ -4036,7 +4105,6 @@ RESPONSE GUIDELINES:
                     transcribed_text = self.continuous_listen_and_transcribe()
                     
                     if transcribed_text:
-                        self.log(f"You: {transcribed_text}")
                         # Process the conversation
                         self.process_conversation(transcribed_text)
                         # Immediately ready for next input
