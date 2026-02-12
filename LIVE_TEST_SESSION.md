@@ -1,6 +1,6 @@
 # Jarvis GT2 - Live Test Session Results
 
-**Date**: February 11, 2026
+**Date**: February 12, 2026
 **Objective**: Silent verification of live command flows without microphone interaction.
 
 ---
@@ -16,6 +16,10 @@
 * **Status**: `PASSED`
 
 ### Test 3.1: Flow 1 (Web Search -> Deep Dig)
+
+* **Status**: `PASSED`
+
+### Test 3.1b: Flow (Summarized Web Result N)
 
 * **Status**: `PASSED`
 
@@ -35,7 +39,15 @@
 
 * **Status**: `PASSED`
 
+### Test 3.5b: Voice Variant (E-mail 1.)
+
+* **Status**: `PASSED`
+
 ### Test 3.6: Flow 8 (News Intent -> Ticker -> Natural Select)
+
+* **Status**: `PASSED`
+
+### Test 3.7: Flow 9 (System Specs Intent)
 
 * **Status**: `PASSED`
 

@@ -15,6 +15,7 @@ except ImportError:
 
 import requests
 import functools
+import platform
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import os.path
@@ -38,6 +39,7 @@ import tempfile
 import shutil
 import wave
 import numpy as np
+import psutil
 import collections
 import re
 from flask import Flask, request, jsonify
@@ -310,6 +312,18 @@ INTENTS = {
     "NEWS": {
         "keywords": ["news", "headline", "headlines", "morning briefing", "uk news", "today's news", "news today"],
         "handler": "handle_news_request", "name": "get news headlines"
+    },
+    "SYSTEM_SPECS": {
+        "keywords": ["system specs", "pc specs", "pc resources", "system resources", "hardware", "machine specs", "what are your specs"],
+        "handler": "handle_system_specs_request", "name": "show local system specs"
+    },
+    "REFRESH_VAULT": {
+        "keywords": ["index files", "refresh vault", "re-scan project", "rescan project", "reindex"],
+        "handler": "handle_refresh_vault", "name": "refresh project index"
+    },
+    "FILE_SEARCH": {
+        "keywords": ["search the vault", "search vault", "find file", "locate file", "find document", "find doc", "search project files"],
+        "handler": "handle_file_search", "name": "search project files"
     },
     "WEB_SEARCH": {"keywords": ["search", "who is", "what is", "find", "google"], "handler": "handle_web_search", "name": "search the web"}
 }
@@ -1424,6 +1438,8 @@ Summary (concise, action-item focused):"""
         Returns True if a command was found and handled, False otherwise.
         """
         text = raw_text.lower().strip()
+        text = re.sub(r'[.!?]+$', '', text)
+        text = re.sub(r'\be[\s-]?mail\b', 'email', text)
         if not hasattr(self, "session_context") or self.session_context is None:
             return False
 
@@ -1452,7 +1468,17 @@ Summary (concise, action-item focused):"""
                     self.speak_with_piper(f"Showing {alias}.")
                 return True
             if item_type in ('d', 'c'):
-                content = meta.get('summary', '(No content stored)')
+                if item_type == 'c' and meta.get('path'):
+                    file_path = meta.get('path')
+                    preview = ""
+                    try:
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            preview = f.read(4000)
+                    except Exception:
+                        preview = meta.get('summary', '(No preview available)')
+                    content = f"File: {file_path}\n\n{preview}"
+                else:
+                    content = meta.get('summary', '(No content stored)')
                 self.dashboard.push_focus("docs", f"[{alias}] {label}", content)
                 self.speak_with_piper(f"Showing {alias}.")
                 return True
@@ -1524,6 +1550,8 @@ Summary (concise, action-item focused):"""
             if not phrase:
                 return None
             phrase = phrase.strip().lower()
+            phrase = re.sub(r'[.!?]+$', '', phrase)
+            phrase = re.sub(r'\be[\s-]?mail\b', 'email', phrase)
 
             # Direct short-key support remains first-class.
             direct = re.search(r"\b([a-z]+\d+)\b", phrase)
@@ -1593,6 +1621,18 @@ Summary (concise, action-item focused):"""
         # Natural quick deep-dig: "web result 3" / "result one"
         m = re.fullmatch(
             rf'\s*(?:the\s+)?(?:web\s+)?result\s*({ordinal_tokens_pattern})\s*',
+            text
+        )
+        if m:
+            alias = _resolve_alias_from_phrase(f"web result {m.group(1)}")
+            if alias:
+                item = _get_item(alias)
+                if item and item.get("type") == "w":
+                    return self.handle_deep_dig(alias)
+
+        # Natural summary trigger: "summarize web result 4" / "summarized web result for"
+        m = re.search(
+            rf'\b(?:summari[sz]e|summari[sz]ed)\s+(?:the\s+)?(?:web\s+)?result\s*({ordinal_tokens_pattern})\b',
             text
         )
         if m:
@@ -1838,6 +1878,63 @@ Summary (concise, action-item focused):"""
         except Exception as e:
             logger.error(f"News fetch failed: {e}", exc_info=True)
             self.speak_with_piper("I had trouble fetching the UK headlines.")
+
+    def handle_system_specs_request(self, user_request):
+        """Report local machine specs/resources and push details to dashboard."""
+        try:
+            vm = psutil.virtual_memory()
+            disk = psutil.disk_usage(os.path.abspath(os.sep))
+            cpu_model = platform.processor() or "Unknown CPU"
+            host = platform.node() or "Unknown Host"
+            os_name = f"{platform.system()} {platform.release()}".strip()
+            cores_phys = psutil.cpu_count(logical=False) or 0
+            cores_logical = psutil.cpu_count(logical=True) or 0
+            cpu_now = psutil.cpu_percent(interval=0.1)
+
+            total_ram_gb = vm.total / (1024 ** 3)
+            avail_ram_gb = vm.available / (1024 ** 3)
+            disk_total_gb = disk.total / (1024 ** 3)
+            disk_free_gb = disk.free / (1024 ** 3)
+
+            spoken = (
+                f"Sir, I am running on {host} with {os_name}. "
+                f"I have {cores_phys} physical cores, {cores_logical} logical cores, "
+                f"about {total_ram_gb:.1f} gigabytes of RAM, with {avail_ram_gb:.1f} available right now. "
+                f"Current CPU usage is {cpu_now:.0f} percent."
+            )
+            self.speak(spoken)
+
+            focus = (
+                f"### System Overview\n"
+                f"- Host: {host}\n"
+                f"- OS: {os_name}\n"
+                f"- CPU: {cpu_model}\n"
+                f"- Cores: {cores_phys} physical / {cores_logical} logical\n"
+                f"- CPU Usage: {cpu_now:.1f}%\n"
+                f"- RAM: {total_ram_gb:.1f} GB total / {avail_ram_gb:.1f} GB available\n"
+                f"- Disk: {disk_total_gb:.1f} GB total / {disk_free_gb:.1f} GB free\n"
+            )
+            if hasattr(self, "dashboard") and self.dashboard:
+                self.dashboard.push_focus("docs", "System Specs", focus)
+
+            self.last_intent = "optimization"
+            self.log_vault_action(
+                action_type="system_specs",
+                description="Reported local system specs/resources",
+                metadata={
+                    "host": host,
+                    "os": os_name,
+                    "cpu": cpu_model,
+                    "cores_physical": cores_phys,
+                    "cores_logical": cores_logical,
+                    "ram_total_gb": round(total_ram_gb, 2),
+                    "ram_available_gb": round(avail_ram_gb, 2),
+                    "cpu_usage_pct": round(cpu_now, 2),
+                }
+            )
+        except Exception as e:
+            logger.error(f"System specs request failed: {e}", exc_info=True)
+            self.speak_with_piper("I had trouble collecting system specifications.")
 
     def handle_deep_dig(self, alias: str) -> bool:
         """Analyze a web result referenced by short key (wr*), then store as d*."""
@@ -2471,6 +2568,106 @@ RESPONSE GUIDELINES:
         except Exception as e:
             logger.error(f"Vault search failed: {e}")
             return f"Search error: {e}"
+
+    def handle_refresh_vault(self, user_request):
+        """Refresh vault index and announce result."""
+        if not self.vault:
+            self.speak_with_piper("Vault index is not available.")
+            return
+        try:
+            result = self.vault.scan() if hasattr(self.vault, "scan") else {"new_files": 0, "total_files": 0}
+            new_files = int(result.get("new_files", 0))
+            total_files = int(result.get("total_files", 0))
+            msg = f"Sir, I have updated the project index. {new_files} new files found."
+            self.log(msg + f" Total indexed files: {total_files}")
+            if hasattr(self, "dashboard") and self.dashboard:
+                self.dashboard.push_log("success", msg)
+            self.speak_with_piper(msg)
+            self.last_intent = "optimization"
+        except Exception as e:
+            logger.error(f"Vault refresh failed: {e}", exc_info=True)
+            self.speak_with_piper("I had trouble refreshing the project index.")
+
+    def handle_file_search(self, user_request):
+        """Search project files, with MemoryIndex-first and vault quick-scan fallback."""
+        text = (user_request or "").strip()
+        query = text
+        for prefix in [
+            "search the vault for", "search vault for", "search the vault", "search vault",
+            "find file", "locate file", "find document", "find doc", "search project files for",
+            "search project files"
+        ]:
+            if prefix in query.lower():
+                query = re.sub(re.escape(prefix), "", query, flags=re.IGNORECASE).strip(" :.-")
+        if not query:
+            self.speak_with_piper("What file should I search for, Sir?")
+            return
+
+        hits = []
+        try:
+            action_hits = self.memory_index.search_by_keyword(query, limit=15) if self.memory_index else []
+            for action in action_hits:
+                meta = action.get("metadata", {}) if isinstance(action, dict) else {}
+                candidate = meta.get("filename") or meta.get("file_path") or meta.get("path")
+                if not candidate:
+                    continue
+                if os.path.exists(candidate):
+                    hits.append({"path": candidate, "name": os.path.basename(candidate)})
+        except Exception:
+            hits = []
+
+        # Smart fallback: if indexed memory has no file hits, do quick filesystem scan.
+        if not hits and self.vault and hasattr(self.vault, "quick_scan"):
+            try:
+                quick = self.vault.quick_scan(query, limit=10)
+                for qh in quick:
+                    path = qh.get("path")
+                    if path:
+                        hits.append({"path": path, "name": qh.get("name", os.path.basename(path))})
+            except Exception as e:
+                logger.error(f"Vault quick_scan failed: {e}")
+
+        # De-duplicate and keep top N.
+        unique = []
+        seen = set()
+        for h in hits:
+            p = h.get("path")
+            if not p or p in seen:
+                continue
+            seen.add(p)
+            unique.append(h)
+            if len(unique) >= 5:
+                break
+
+        if not unique:
+            self.speak_with_piper("I couldn't find any matching files.")
+            return
+
+        if hasattr(self, "session_context") and self.session_context:
+            self.session_context.clear()
+
+        cards = []
+        for idx, h in enumerate(unique, 1):
+            path = h["path"]
+            name = h["name"]
+            preview = ""
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    preview = f.read(400)
+            except Exception:
+                preview = "(Preview unavailable)"
+            self.session_context.add_item(
+                full_key=f"{datetime.now().strftime('%Y%m%d')}-c{idx}",
+                label=name,
+                item_type="c",
+                metadata={"path": path, "summary": preview}
+            )
+            cards.append(f"### [c{idx}] {name}\nPath: `{path}`\n")
+
+        self.dashboard.push_focus("docs", f"Vault Search: {query}", "\n\n".join(cards))
+        self.dashboard.update_ticker(self.session_context.get_all_items_for_ticker())
+        self.speak_with_piper(f"I found {len(unique)} file results. You can say read c1.")
+        self.last_intent = "optimization"
     
     def detect_and_switch_project(self, text):
         """Auto-detect if user mentions a project and switch context (case-insensitive).

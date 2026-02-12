@@ -156,6 +156,15 @@ def run():
     flow_31 = j.session_context.get_item("d1") is not None
     results.append(("Test 3.1: Flow 1 (Web Search -> Deep Dig)", flow_31))
 
+    # 3.1b Flow (Summarized Web Result N -> Deep Dig)
+    with patch("jarvis_main.requests.get") as mock_get:
+        mock_get.return_value.raise_for_status = lambda: None
+        mock_get.return_value.text = "<html><body><h1>Decorators 2</h1><p>Detailed content two.</p></body></html>"
+        j.process_conversation("search the web for python decorators")
+        j.process_conversation("summarized web result 2.")
+    flow_31b = any(k.startswith("d") for k in j.session_context.items.keys())
+    results.append(("Test 3.1b: Flow (Summarized Web Result N)", flow_31b))
+
     # 3.2 Flow 2 (Email Summary -> Reply -> Yes)
     with patch("jarvis_main.requests.post") as mock_post:
         mock_post.return_value.json.return_value = {"response": "Email summary output."}
@@ -184,6 +193,12 @@ def run():
     flow_35 = any(ct == "email" and "[e1]" in title.lower() for ct, title, _ in j.dashboard.focus_calls)
     results.append(("Test 3.5: Flow 7 (Email Search -> Display)", flow_35))
 
+    # 3.5b Voice variant (E-mail 1 punctuation) should resolve to e1 context item
+    j.process_conversation("summarize my emails")
+    j.process_conversation("E-mail 1.")
+    flow_35b = any(ct == "email" and "[e1]" in title.lower() for ct, title, _ in j.dashboard.focus_calls)
+    results.append(("Test 3.5b: Voice Variant (E-mail 1.)", flow_35b))
+
     # 3.6 Flow 8 (News Intent -> Ticker/Focus -> Natural Selection)
     with patch("jarvis_main.NEWS_API_KEY", "test-news-key"), patch("jarvis_main.requests.get") as mock_news_get:
         mock_news_get.return_value.raise_for_status = lambda: None
@@ -203,6 +218,11 @@ def run():
     has_news_ticker = any(any(item.get("short_key", "").lower().startswith("news ") for item in call) for call in j.dashboard.ticker_calls if isinstance(call, list))
     flow_36 = has_news_focus and has_news_ticker
     results.append(("Test 3.6: Flow 8 (News Intent -> Ticker -> Natural Select)", flow_36))
+
+    # 3.7 Flow 9 (System Specs Intent)
+    j.process_conversation("what are your pc resources")
+    flow_37 = any("System Specs" in title for _, title, _ in j.dashboard.focus_calls)
+    results.append(("Test 3.7: Flow 9 (System Specs Intent)", flow_37))
 
     all_pass = all(status for _, status in results)
     date_str = datetime.now().strftime("%B %d, %Y")
