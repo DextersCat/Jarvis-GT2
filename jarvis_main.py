@@ -429,6 +429,7 @@ class JarvisGT2:
         self.last_break_time = time.time()
         self.memory = self.load_memory()
         self.current_llm_tier = "smart"
+        self.ui_mode = "normal"
         
         # VAD parameters - loaded from config
         self.vad_threshold = VAD_SETTINGS.get("energy_threshold", 500)
@@ -761,11 +762,17 @@ class JarvisGT2:
         
         self.log(f"📊 Health logged: {metric_type.title()} = {level_name}")
         
-        # If pain > 3 (Severe), respond with concern
-        if metric_type == "pain" and level > 3:
+        # If pain is severe, switch to concise/dim interaction profile.
+        if metric_type == "pain" and level_name == "Severe":
+            self.ui_mode = "concise"
+            if hasattr(self, "dashboard") and self.dashboard and hasattr(self.dashboard, "push_ui_adjust"):
+                self.dashboard.push_ui_adjust(mode="concise", theme="dim")
             response = "I've logged your pain level, Sir. I will keep our responses concise to save your energy."
             self.log(f"Jarvis: {response}")
             self.speak_with_piper(response)
+        elif metric_type == "pain" and level_name in {"None", "Mild", "Moderate"}:
+            # Allow UI/session to return to standard mode when pain subsides.
+            self.ui_mode = "normal"
     
     def handle_dashboard_state_change(self, key: str, value: bool):
         """Handle state changes from dashboard UI toggles.
@@ -2799,6 +2806,27 @@ RESPONSE GUIDELINES:
             except Exception:
                 hits = []
 
+        # Fuzzy nickname resolver: when exact filename isn't found, try close filename matches.
+        query_filename = os.path.basename(query).strip().lower()
+        exact_name_found = any(str(h.get("name", "")).strip().lower() == query_filename for h in hits if query_filename)
+        if (not exact_name_found) and self.vault and hasattr(self.vault, "fuzzy_file_match"):
+            try:
+                fuzzy_hits = self.vault.fuzzy_file_match(query, limit=5)
+                prioritized_fuzzy = []
+                for fh in fuzzy_hits:
+                    path = fh.get("path")
+                    if path:
+                        prioritized_fuzzy.append({
+                            "path": path,
+                            "name": fh.get("name", os.path.basename(path)),
+                            "score": fh.get("score"),
+                            "modified": fh.get("modified")
+                        })
+                if prioritized_fuzzy:
+                    hits = prioritized_fuzzy + hits
+            except Exception as e:
+                logger.error(f"Vault fuzzy_file_match failed: {e}")
+
         # Final fallback: quick filesystem scan.
         if not hits and self.vault and hasattr(self.vault, "quick_scan"):
             try:
@@ -3822,11 +3850,43 @@ RESPONSE GUIDELINES:
         text = ' '.join(text.split())
         return text
 
+    @staticmethod
+    def _truncate_to_words(text: str, max_words: int = 15) -> str:
+        words = str(text).split()
+        if len(words) <= max_words:
+            return " ".join(words)
+        return " ".join(words[:max_words]).rstrip(".,;:!?") + "."
+
+    def _apply_concise_mode_text(self, text: str) -> str:
+        """When concise mode is active, rewrite speech to <=15 words via fast-tier LLM."""
+        if getattr(self, "ui_mode", "normal") != "concise":
+            return text
+        if not text:
+            return text
+
+        normalized = " ".join(str(text).split())
+        if len(normalized.split()) <= 15:
+            return normalized
+
+        prompt = (
+            "Rewrite this for voice output in 15 words or fewer. "
+            "Keep core meaning, no markdown, no preamble.\n\n"
+            f"Text: {normalized}\n\n"
+            "Result:"
+        )
+        try:
+            concise = self.call_smart_model(prompt, timeout=8, tier="fast")
+            concise = " ".join(str(concise).split())
+            return self._truncate_to_words(concise, 15)
+        except Exception:
+            return self._truncate_to_words(normalized, 15)
+
     def speak(self, text):
         """Canonical speech entrypoint for assistant voice output."""
-        self.speak_with_piper(text)
+        concise_text = self._apply_concise_mode_text(text)
+        self.speak_with_piper(concise_text, preprocessed=True)
 
-    def speak_with_piper(self, text):
+    def speak_with_piper(self, text, preprocessed: bool = False):
         """Use Piper TTS to speak longer responses (with barge-in support).
         Uses a lock to prevent concurrent audio playback (speaking over self).
         """
@@ -3846,6 +3906,9 @@ RESPONSE GUIDELINES:
                     return
             
             try:
+                if not preprocessed:
+                    text = self._apply_concise_mode_text(text)
+
                 # Clean text for speech
                 clean_text = self.sanitize_for_speech(text)
                 

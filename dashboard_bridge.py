@@ -353,6 +353,16 @@ class DashboardBridge:
             title = str(article.get("title", "Untitled")).strip()
             items.append({"short_key": f"News {idx}", "label": title})
         self.update_ticker(items)
+
+    def push_ui_adjust(self, mode: str, theme: str):
+        """Push UI adjustment directive, e.g. concise/dim mode."""
+        if not self.connected:
+            return
+        self._send({
+            "type": "ui_adjust",
+            "mode": mode,
+            "theme": theme
+        })
     
     def _send(self, data: Dict[str, Any]):
         """Send JSON message to dashboard."""

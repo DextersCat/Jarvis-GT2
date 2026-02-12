@@ -21,6 +21,7 @@ from datetime import datetime
 import math
 import re
 import hashlib
+import difflib
 
 try:
     import openvino_genai as ov_genai  # type: ignore
@@ -36,9 +37,15 @@ class VaultReference:
     file references and navigate the project structure.
     """
     
-    def __init__(self, index_file: str = 'vault_index.json', semantic_index_file: str = 'vault_semantic_index.json'):
+    def __init__(
+        self,
+        index_file: str = 'vault_index.json',
+        semantic_index_file: str = 'vault_semantic_index.json',
+        vector_cache_file: str = 'vector_cache.json'
+    ):
         self.index_file = Path(index_file)
         self.semantic_index_file = Path(semantic_index_file)
+        self.vector_cache_file = Path(vector_cache_file)
         self.index_data = None
         self.is_loaded = False
         self.semantic_index_data = {"created": None, "entries": {}}
@@ -208,21 +215,27 @@ class VaultReference:
     def _load_semantic_index(self) -> bool:
         """Load semantic index from disk if available."""
         try:
-            if self.semantic_index_file.exists():
-                with open(self.semantic_index_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                if isinstance(data, dict) and "entries" in data:
-                    self.semantic_index_data = data
-                    return True
+            for source in (self.vector_cache_file, self.semantic_index_file):
+                if source.exists():
+                    with open(source, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    if isinstance(data, dict) and "entries" in data:
+                        self.semantic_index_data = data
+                        return True
         except Exception:
             pass
         self.semantic_index_data = {"created": None, "entries": {}}
         return False
 
     def _save_semantic_index(self) -> None:
-        """Persist semantic index; best effort."""
+        """Persist semantic index to legacy and vector cache files; best effort."""
         try:
             with open(self.semantic_index_file, 'w', encoding='utf-8') as f:
+                json.dump(self.semantic_index_data, f, indent=2)
+        except Exception:
+            pass
+        try:
+            with open(self.vector_cache_file, 'w', encoding='utf-8') as f:
                 json.dump(self.semantic_index_data, f, indent=2)
         except Exception:
             pass
@@ -337,6 +350,10 @@ class VaultReference:
         self._save_semantic_index()
         return changed
 
+    def build_npu_semantic_index(self, projects: Dict) -> int:
+        """Public semantic indexing entrypoint; uses OpenVINO/NPU when available."""
+        return self._refresh_semantic_entries(projects)
+
     def _upsert_semantic_entry(self, entries: Dict, path: Path, project_name: str, project_root: Path) -> int:
         """Create/update single semantic entry if file changed."""
         try:
@@ -405,6 +422,55 @@ class VaultReference:
             })
         scored.sort(key=lambda item: (-item["score"], item["name"]))
         return scored[:limit]
+
+    def fuzzy_file_match(self, query: str, limit: int = 5) -> List[Dict[str, str]]:
+        """Find close filename matches and prioritize newest modified files."""
+        q = (query or "").strip().lower()
+        if not q or not self.index_data:
+            return []
+
+        candidates = []
+        for project_name, project_data in self.index_data.get('projects', {}).items():
+            for fname, fpath in project_data.get('root_files', {}).items():
+                candidates.append((fname, fpath, project_name))
+            for files in project_data.get('folders', {}).values():
+                for fname, fpath in files.items():
+                    candidates.append((fname, fpath, project_name))
+
+        if not candidates:
+            return []
+
+        name_to_records = {}
+        all_names = []
+        for fname, fpath, project_name in candidates:
+            key = fname.lower()
+            all_names.append(key)
+            name_to_records.setdefault(key, []).append((fname, fpath, project_name))
+
+        close = difflib.get_close_matches(q, all_names, n=max(10, limit * 3), cutoff=0.45)
+        if not close:
+            return []
+
+        hits = []
+        for key in close:
+            for fname, fpath, project_name in name_to_records.get(key, []):
+                mtime = 0.0
+                try:
+                    mtime = float(Path(fpath).stat().st_mtime)
+                except Exception:
+                    pass
+                ratio = difflib.SequenceMatcher(None, q, key).ratio()
+                hits.append({
+                    "path": fpath,
+                    "name": fname,
+                    "project": project_name,
+                    "score": round(ratio, 4),
+                    "modified": mtime
+                })
+
+        # Priority rule: most recent file first when fuzzy candidates compete.
+        hits.sort(key=lambda h: (-h.get("modified", 0), -h.get("score", 0), h.get("name", "")))
+        return hits[:limit]
 
     def _total_files_count(self) -> int:
         """Count indexed file entries."""
@@ -491,7 +557,7 @@ class VaultReference:
 
         self.is_loaded = True
         new_total = self._total_files_count()
-        semantic_updated = self._refresh_semantic_entries(projects)
+        semantic_updated = self.build_npu_semantic_index(projects)
         return {
             'total_files': new_total,
             'new_files': max(0, new_total - old_total),
