@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 vault_reference.py - Helper module for Jarvis to query the vault index
 
@@ -18,6 +18,16 @@ import os
 from pathlib import Path
 from typing import Optional, List, Dict
 from datetime import datetime
+import math
+import re
+import hashlib
+
+try:
+    import openvino_genai as ov_genai  # type: ignore
+    OPENVINO_GENAI_AVAILABLE = True
+except ImportError:
+    ov_genai = None
+    OPENVINO_GENAI_AVAILABLE = False
 
 
 class VaultReference:
@@ -26,11 +36,22 @@ class VaultReference:
     file references and navigate the project structure.
     """
     
-    def __init__(self, index_file: str = 'vault_index.json'):
+    def __init__(self, index_file: str = 'vault_index.json', semantic_index_file: str = 'vault_semantic_index.json'):
         self.index_file = Path(index_file)
+        self.semantic_index_file = Path(semantic_index_file)
         self.index_data = None
         self.is_loaded = False
+        self.semantic_index_data = {"created": None, "entries": {}}
+        self.embedding_model_dir = os.getenv("VAULT_EMBED_MODEL_DIR", "models/embeddings-all-minilm-l6-v2-openvino")
+        self.embedding_device_order = [
+            d.strip().upper() for d in os.getenv("VAULT_EMBED_DEVICE_ORDER", "NPU,AUTO,CPU").split(",") if d.strip()
+        ]
+        self.embedding_pipeline = None
+        self.embedding_backend = "hash"
+        self.embedding_device = "cpu"
         self.load_index()
+        self._load_semantic_index()
+        self._init_embedding_runtime()
     
     def load_index(self) -> bool:
         """Load the vault index from JSON file."""
@@ -39,14 +60,14 @@ class VaultReference:
                 with open(self.index_file, 'r') as f:
                     self.index_data = json.load(f)
                 self.is_loaded = True
-                print(f"✓ Vault index loaded from {self.index_file}")
+                print(f"[OK] Vault index loaded from {self.index_file}")
                 return True
             else:
-                print(f"⚠ Index file not found: {self.index_file}")
+                print(f"[WARN] Index file not found: {self.index_file}")
                 print("  Run 'python create_vault_index.py' to generate it.")
                 return False
         except Exception as e:
-            print(f"✗ Error loading vault index: {e}")
+            print(f"[ERR] Error loading vault index: {e}")
             return False
     
     def get_file(self, reference_type: str) -> Optional[str]:
@@ -184,6 +205,207 @@ class VaultReference:
                 if path.suffix.lower() in code_ext:
                     yield path
 
+    def _load_semantic_index(self) -> bool:
+        """Load semantic index from disk if available."""
+        try:
+            if self.semantic_index_file.exists():
+                with open(self.semantic_index_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and "entries" in data:
+                    self.semantic_index_data = data
+                    return True
+        except Exception:
+            pass
+        self.semantic_index_data = {"created": None, "entries": {}}
+        return False
+
+    def _save_semantic_index(self) -> None:
+        """Persist semantic index; best effort."""
+        try:
+            with open(self.semantic_index_file, 'w', encoding='utf-8') as f:
+                json.dump(self.semantic_index_data, f, indent=2)
+        except Exception:
+            pass
+
+    def _init_embedding_runtime(self) -> None:
+        """Initialize embedding runtime, preferring OpenVINO on NPU."""
+        model_dir = Path(self.embedding_model_dir)
+        if not OPENVINO_GENAI_AVAILABLE or not model_dir.exists():
+            return
+
+        for device in self.embedding_device_order:
+            try:
+                self.embedding_pipeline = ov_genai.TextEmbeddingPipeline(str(model_dir), device)
+                self.embedding_backend = "openvino"
+                self.embedding_device = device
+                return
+            except Exception:
+                continue
+
+    def _hash_embedding(self, text: str, dims: int = 192) -> List[float]:
+        """Deterministic lightweight embedding fallback."""
+        vec = [0.0] * dims
+        tokens = re.findall(r"[a-z0-9_./-]+", (text or "").lower())
+        if not tokens:
+            return vec
+
+        def stable_bucket(token: str) -> int:
+            digest = hashlib.sha1(token.encode("utf-8")).hexdigest()
+            return int(digest[:8], 16) % dims
+
+        for token in tokens:
+            idx = stable_bucket(token)
+            vec[idx] += 1.0
+            # add basic character n-gram signal
+            if len(token) > 3:
+                tri = token[:3]
+                vec[stable_bucket(tri)] += 0.5
+        norm = math.sqrt(sum(v * v for v in vec))
+        if norm > 0:
+            vec = [round(v / norm, 6) for v in vec]
+        return vec
+
+    def _embed_text(self, text: str) -> List[float]:
+        """Generate embedding using OpenVINO pipeline when available."""
+        if self.embedding_pipeline is not None:
+            try:
+                result = self.embedding_pipeline.embed(text)
+                if hasattr(result, "tolist"):
+                    vec = result.tolist()
+                else:
+                    vec = list(result)
+                # Flatten common nested outputs
+                if vec and isinstance(vec[0], list):
+                    vec = vec[0]
+                vec = [float(v) for v in vec]
+                norm = math.sqrt(sum(v * v for v in vec))
+                if norm > 0:
+                    return [round(v / norm, 6) for v in vec]
+            except Exception:
+                pass
+        return self._hash_embedding(text)
+
+    @staticmethod
+    def _cosine_similarity(a: List[float], b: List[float]) -> float:
+        """Cosine similarity for normalized vectors."""
+        if not a or not b:
+            return 0.0
+        n = min(len(a), len(b))
+        if n == 0:
+            return 0.0
+        return float(sum(a[i] * b[i] for i in range(n)))
+
+    def _build_semantic_text(self, path: Path, project_name: str, project_root: Path) -> str:
+        """Build text payload used for file embedding."""
+        rel = str(path.relative_to(project_root)).replace("\\", "/")
+        chunks = [path.name, rel, project_name]
+        try:
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read(2000)
+            chunks.append(content)
+        except Exception:
+            pass
+        return "\n".join(chunks)
+
+    def _refresh_semantic_entries(self, projects: Dict) -> int:
+        """Incrementally refresh semantic entries for changed/new files."""
+        entries = self.semantic_index_data.setdefault("entries", {})
+        changed = 0
+        seen_paths = set()
+
+        for project_name, project_data in projects.items():
+            project_root = Path(project_data.get("path", ""))
+            for fpath in list(project_data.get("root_files", {}).values()):
+                p = Path(fpath)
+                seen_paths.add(str(p))
+                changed += self._upsert_semantic_entry(entries, p, project_name, project_root)
+            for files in project_data.get("folders", {}).values():
+                for fpath in files.values():
+                    p = Path(fpath)
+                    seen_paths.add(str(p))
+                    changed += self._upsert_semantic_entry(entries, p, project_name, project_root)
+
+        # Drop deleted files from semantic index.
+        stale = [p for p in entries.keys() if p not in seen_paths]
+        for p in stale:
+            entries.pop(p, None)
+            changed += 1
+
+        self.semantic_index_data["created"] = datetime.now().isoformat()
+        self.semantic_index_data["backend"] = self.embedding_backend
+        self.semantic_index_data["device"] = self.embedding_device
+        self._save_semantic_index()
+        return changed
+
+    def _upsert_semantic_entry(self, entries: Dict, path: Path, project_name: str, project_root: Path) -> int:
+        """Create/update single semantic entry if file changed."""
+        try:
+            st = path.stat()
+        except Exception:
+            return 0
+        key = str(path)
+        mtime = float(st.st_mtime)
+        size = int(st.st_size)
+        current = entries.get(key, {})
+        if current.get("mtime") == mtime and current.get("size") == size:
+            return 0
+        try:
+            rel = str(path.relative_to(project_root)).replace("\\", "/")
+        except Exception:
+            rel = path.name
+        text = self._build_semantic_text(path, project_name, project_root)
+        emb = self._embed_text(text)
+        entries[key] = {
+            "path": key,
+            "name": path.name,
+            "project": project_name,
+            "relative": rel,
+            "mtime": mtime,
+            "size": size,
+            "embedding": emb
+        }
+        return 1
+
+    def semantic_search(self, query: str, limit: int = 10) -> List[Dict[str, str]]:
+        """Search indexed files by cosine similarity against semantic embeddings."""
+        q = (query or "").strip()
+        if not q:
+            return []
+        entries = self.semantic_index_data.get("entries", {})
+        if not entries:
+            return []
+        q_emb = self._embed_text(q)
+        q_tokens = [t for t in re.findall(r"[a-z0-9_./-]+", q.lower()) if len(t) > 1]
+        scored = []
+        for entry in entries.values():
+            emb = entry.get("embedding") or []
+            score = self._cosine_similarity(q_emb, emb)
+            # Lexical boost: favors direct filename/path intent like "baseline architecture".
+            name_l = (entry.get("name") or "").lower()
+            path_l = (entry.get("path") or "").lower()
+            token_hits = 0
+            for token in q_tokens:
+                if token in name_l:
+                    score += 0.30
+                    token_hits += 1
+                elif token in path_l:
+                    score += 0.10
+                    token_hits += 1
+            # Bonus for strong token overlap to prioritize likely direct user intent.
+            if q_tokens:
+                overlap = token_hits / len(q_tokens)
+                score += overlap * 0.25
+            if score <= 0:
+                continue
+            scored.append({
+                "path": entry.get("path", ""),
+                "name": entry.get("name", ""),
+                "project": entry.get("project", ""),
+                "score": round(score, 4)
+            })
+        scored.sort(key=lambda item: (-item["score"], item["name"]))
+        return scored[:limit]
+
     def _total_files_count(self) -> int:
         """Count indexed file entries."""
         if not self.index_data:
@@ -269,7 +491,12 @@ class VaultReference:
 
         self.is_loaded = True
         new_total = self._total_files_count()
-        return {'total_files': new_total, 'new_files': max(0, new_total - old_total)}
+        semantic_updated = self._refresh_semantic_entries(projects)
+        return {
+            'total_files': new_total,
+            'new_files': max(0, new_total - old_total),
+            'semantic_updated': semantic_updated
+        }
 
     def quick_scan(self, query: str, limit: int = 10) -> List[Dict[str, str]]:
         """Quick filename scan directly on filesystem for newly created files."""
@@ -297,13 +524,38 @@ class VaultReference:
                 })
 
         hits.sort(key=lambda h: (-h['score'], h['name']))
+        # Update semantic index with quick-scan hits so freshly-created files become searchable.
+        if hits:
+            entries = self.semantic_index_data.setdefault("entries", {})
+            changed = 0
+            for h in hits:
+                p = Path(h["path"])
+                project_root = p.parent
+                # Try derive project root from known vault root.
+                try:
+                    root_str = self.index_data.get('vault_root') if self.index_data else None
+                    if root_str:
+                        root = Path(root_str)
+                        if root in p.parents:
+                            # project folder is first element under vault root
+                            rel_parts = p.relative_to(root).parts
+                            if rel_parts:
+                                project_root = root / rel_parts[0]
+                except Exception:
+                    pass
+                changed += self._upsert_semantic_entry(entries, p, h.get("project", ""), project_root)
+            if changed:
+                self.semantic_index_data["created"] = datetime.now().isoformat()
+                self.semantic_index_data["backend"] = self.embedding_backend
+                self.semantic_index_data["device"] = self.embedding_device
+                self._save_semantic_index()
         return hits[:limit]
 
 
 def demo_vault_reference():
     """Demonstrate how Jarvis would use the VaultReference class."""
     print("\n" + "="*70)
-    print("🤖 DEMO: Jarvis using VaultReference Helper")
+    print("ðŸ¤– DEMO: Jarvis using VaultReference Helper")
     print("="*70 + "\n")
     
     vault = VaultReference()
@@ -312,12 +564,12 @@ def demo_vault_reference():
         print("Index not loaded! Please run: python create_vault_index.py\n")
         return
     
-    print("📊 Vault Summary:")
+    print("ðŸ“Š Vault Summary:")
     summary = vault.get_summary()
     for key, value in summary.items():
         print(f"   {key}: {value}")
     
-    print("\n🔍 Example Queries:\n")
+    print("\nðŸ” Example Queries:\n")
     
     # Test various queries
     queries = [
@@ -333,25 +585,26 @@ def demo_vault_reference():
             result = vault.get_file(query)
             if result:
                 filename = Path(result).name
-                print(f"  Query: 'main file' → {filename}")
+                print(f"  Query: 'main file' â†’ {filename}")
                 print(f"    Full path: {result}\n")
         else:
             results = vault.get_files(query)
             if results:
-                print(f"  Query: 'test files' → Found {len(results)} file(s)")
+                print(f"  Query: 'test files' â†’ Found {len(results)} file(s)")
                 for r in results[:3]:  # Show first 3
-                    print(f"    • {Path(r).name}")
+                    print(f"    â€¢ {Path(r).name}")
                 if len(results) > 3:
                     print(f"    ... and {len(results) - 3} more")
                 print()
     
-    print("🔎 File Search Example:")
+    print("ðŸ”Ž File Search Example:")
     searched_file = vault.search_file('jarvisgt2.py')
     if searched_file:
-        print(f"  Finding 'jarvisgt2.py' → {searched_file}\n")
+        print(f"  Finding 'jarvisgt2.py' â†’ {searched_file}\n")
     
     print("="*70 + "\n")
 
 
 if __name__ == '__main__':
     demo_vault_reference()
+

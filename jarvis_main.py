@@ -5,13 +5,26 @@ import threading
 import time
 import os
 import json
+import sys
 
-# Use OpenVINO-accelerated Whisper
+# Whisper backends:
+# - openai-whisper (CPU fallback)
+# - OpenVINO GenAI WhisperPipeline (NPU/AUTO/CPU)
 try:
     import whisper
+    WHISPER_AVAILABLE = True
 except ImportError:
-    print("ERROR: openvino-whisper is not installed. Please run 'pip install openvino-whisper'.")
-    sys.exit(1)
+    whisper = None
+    WHISPER_AVAILABLE = False
+
+try:
+    import openvino as ov
+    import openvino_genai as ov_genai
+    OPENVINO_STT_AVAILABLE = True
+except ImportError:
+    ov = None
+    ov_genai = None
+    OPENVINO_STT_AVAILABLE = False
 
 import requests
 import functools
@@ -23,7 +36,6 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 import subprocess
-import sys
 import logging
 
 try:
@@ -344,13 +356,12 @@ class JarvisGT2:
         self.mic_muted = False
         self.last_interaction_time = time.time()
         
-        # --- NEW: OpenVINO Whisper Integration ---
-        logger.info("Loading Whisper STT model...")
-        # FINAL FIX: Use "AUTO". This lets the OpenVINO backend select the best
-        # hardware (prioritizing NPU) without causing PyTorch device string errors.
-        # FALLBACK: Reverting to CPU due to NPU/OpenVINO environment issues.
-        self.stt_model = whisper.load_model("base", device="cpu")
-        logger.info(f"✓ Whisper STT model offloaded to: {self.stt_model.device}")
+        # STT runtime selection: prefer OpenVINO Whisper (NPU/AUTO), then openai-whisper CPU.
+        self.stt_model = None
+        self.ov_whisper_pipeline = None
+        self.stt_backend = "none"
+        self.stt_device = "none"
+        self._init_stt_runtime()
         
         self.porcupine = None
         self.recorder = None
@@ -445,6 +456,7 @@ class JarvisGT2:
         self.dashboard.on_health_update = self.handle_health_update
         self.dashboard.on_state_change = self.handle_dashboard_state_change
         self.dashboard.start()
+        self.dashboard.set_stt_backend(self.stt_backend, self.stt_device)
         
         logger.info("Jarvis GT2 initializing...")
         logger.info("🌐 UI handled by Cyber-Grid Dashboard at http://localhost:5000") 
@@ -463,6 +475,106 @@ class JarvisGT2:
 
         # Auto-start listening for wake word (Normal Mode)
         self.start_listening()
+
+    def _init_stt_runtime(self):
+        """Initialize speech-to-text runtime with OpenVINO preference and CPU fallback."""
+        preferred_model_dir = os.getenv("STT_OV_MODEL_DIR", "whisper-base-with-past-ov2").strip()
+        preferred_order = [
+            item.strip().upper()
+            for item in os.getenv("STT_OV_DEVICE_ORDER", "NPU,AUTO,CPU").split(",")
+            if item.strip()
+        ]
+        model_name = os.getenv("STT_WHISPER_MODEL", "base").strip()
+        use_openvino = os.getenv("STT_USE_OPENVINO", "1").strip().lower() not in {"0", "false", "no"}
+
+        logger.info("Loading STT runtime...")
+
+        if use_openvino and OPENVINO_STT_AVAILABLE and os.path.isdir(preferred_model_dir):
+            try:
+                core = ov.Core()
+                available = set(core.available_devices)
+                logger.info(f"OpenVINO STT model directory: {preferred_model_dir}")
+                logger.info(f"OpenVINO available devices: {sorted(available)}")
+                for device in preferred_order:
+                    if device != "AUTO" and device not in available:
+                        continue
+                    try:
+                        self.ov_whisper_pipeline = ov_genai.WhisperPipeline(preferred_model_dir, device)
+                        self.stt_backend = "openvino-whisper"
+                        self.stt_device = device
+                        logger.info(f"STT initialized: backend={self.stt_backend}, device={self.stt_device}")
+                        return
+                    except Exception as ex:
+                        logger.warning(f"OpenVINO STT init failed on {device}: {ex}")
+            except Exception as ex:
+                logger.warning(f"OpenVINO STT probing failed: {ex}")
+        elif use_openvino and not OPENVINO_STT_AVAILABLE:
+            logger.warning("OpenVINO STT unavailable (openvino/openvino_genai not installed), using fallback")
+        elif use_openvino and not os.path.isdir(preferred_model_dir):
+            logger.warning(f"OpenVINO STT model directory not found: {preferred_model_dir}, using fallback")
+
+        if not WHISPER_AVAILABLE:
+            raise RuntimeError("No STT backend available. Install openai-whisper or OpenVINO STT dependencies.")
+
+        self.stt_model = whisper.load_model(model_name, device="cpu")
+        self.stt_backend = "openai-whisper"
+        self.stt_device = "cpu"
+        logger.info(f"STT initialized: backend={self.stt_backend}, device={self.stt_device}, model={model_name}")
+
+    @staticmethod
+    def _load_wav_as_float32(path: str):
+        """Load 16-bit PCM WAV and return mono normalized float samples."""
+        with wave.open(path, "rb") as wf:
+            channels = wf.getnchannels()
+            sample_width = wf.getsampwidth()
+            frame_count = wf.getnframes()
+            raw_data = wf.readframes(frame_count)
+
+        if sample_width != 2:
+            raise ValueError("Only 16-bit PCM WAV is supported for OpenVINO STT input.")
+
+        samples = np.frombuffer(raw_data, dtype=np.int16)
+        if channels > 1:
+            samples = samples.reshape(-1, channels).mean(axis=1).astype(np.int16)
+
+        return np.clip(samples.astype(np.float32) / 32768.0, -1.0, 1.0).tolist()
+
+    @staticmethod
+    def _extract_openvino_text(result) -> str:
+        """Handle varying OpenVINO Whisper result shapes."""
+        if result is None:
+            return ""
+        texts = getattr(result, "texts", None)
+        if isinstance(texts, (list, tuple)):
+            return " ".join(str(item) for item in texts if item is not None).strip()
+        text = getattr(result, "text", None)
+        if text:
+            return str(text).strip()
+        return str(result).strip()
+
+    def _transcribe_audio_file(self, audio_path: str) -> tuple[str, int]:
+        """Transcribe an audio file using active STT backend and return (text, elapsed_ms)."""
+        t0 = time.perf_counter()
+        text = ""
+        if self.stt_backend == "openvino-whisper" and self.ov_whisper_pipeline is not None:
+            raw_audio = self._load_wav_as_float32(audio_path)
+            result = self.ov_whisper_pipeline.generate(raw_audio)
+            text = self._extract_openvino_text(result)
+        else:
+            result = self.stt_model.transcribe(audio_path, language="en")
+            text = (result.get("text") or "").strip()
+            if not text:
+                logger.info("Empty transcript on first pass, retrying Whisper with deterministic settings")
+                retry_result = self.stt_model.transcribe(
+                    audio_path,
+                    language="en",
+                    fp16=False,
+                    temperature=0.0,
+                    condition_on_previous_text=False
+                )
+                text = (retry_result.get("text") or "").strip()
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        return text, elapsed_ms
 
     def start_listening(self):
         """Start wake word detection automatically."""
@@ -1695,6 +1807,22 @@ Summary (concise, action-item focused):"""
             alias = _resolve_alias_from_phrase(m.group(1)) or m.group(1).lower()
             return _present_item(alias, open_web=('open' in text))
 
+        # "read c1" / "read e2" / "read wr3"
+        m = re.search(r'\bread(?:\s+me)?\s+([a-z]+\d+|.+)$', text)
+        if m:
+            alias = _resolve_alias_from_phrase(m.group(1)) or m.group(1).lower()
+            return _present_item(alias, open_web=False)
+
+        # Direct alias utterance: "c1" / "wr2" / "e1" / "n1"
+        m = re.fullmatch(r'\s*([a-z]+\d+)\s*', text)
+        if m:
+            alias = m.group(1).lower()
+            item = _get_item(alias)
+            if item and item.get("type") == "w":
+                return self.handle_deep_dig(alias)
+            if item:
+                return _present_item(alias)
+
         # Natural quick-action references:
         # - "web result 3" -> deep dive that web result
         # - "email 2" / "doc 1" / "code 1" / "result 2" -> present item
@@ -2616,14 +2744,33 @@ RESPONSE GUIDELINES:
         except Exception:
             hits = []
 
-        # Smart fallback: if indexed memory has no file hits, do quick filesystem scan.
+        # Semantic fallback: cosine similarity over vault semantic embeddings.
+        if not hits and self.vault and hasattr(self.vault, "semantic_search"):
+            try:
+                semantic_hits = self.vault.semantic_search(query, limit=10)
+                for sh in semantic_hits:
+                    path = sh.get("path")
+                    if path:
+                        hits.append({
+                            "path": path,
+                            "name": sh.get("name", os.path.basename(path)),
+                            "score": sh.get("score")
+                        })
+            except Exception as e:
+                logger.error(f"Vault semantic_search failed: {e}")
+
+        # Smart fallback: if semantic has no hits, do quick filesystem scan.
         if not hits and self.vault and hasattr(self.vault, "quick_scan"):
             try:
                 quick = self.vault.quick_scan(query, limit=10)
                 for qh in quick:
                     path = qh.get("path")
                     if path:
-                        hits.append({"path": path, "name": qh.get("name", os.path.basename(path))})
+                        hits.append({
+                            "path": path,
+                            "name": qh.get("name", os.path.basename(path)),
+                            "score": qh.get("score")
+                        })
             except Exception as e:
                 logger.error(f"Vault quick_scan failed: {e}")
 
@@ -2650,6 +2797,7 @@ RESPONSE GUIDELINES:
         for idx, h in enumerate(unique, 1):
             path = h["path"]
             name = h["name"]
+            score = h.get("score")
             preview = ""
             try:
                 with open(path, "r", encoding="utf-8", errors="ignore") as f:
@@ -2660,9 +2808,10 @@ RESPONSE GUIDELINES:
                 full_key=f"{datetime.now().strftime('%Y%m%d')}-c{idx}",
                 label=name,
                 item_type="c",
-                metadata={"path": path, "summary": preview}
+                metadata={"path": path, "summary": preview, "score": score}
             )
-            cards.append(f"### [c{idx}] {name}\nPath: `{path}`\n")
+            score_line = f"Similarity: {score:.2f}\n" if isinstance(score, (float, int)) else ""
+            cards.append(f"### [c{idx}] {name}\n{score_line}Path: `{path}`\n")
 
         self.dashboard.push_focus("docs", f"Vault Search: {query}", "\n\n".join(cards))
         self.dashboard.update_ticker(self.session_context.get_all_items_for_ticker())
@@ -3392,26 +3541,18 @@ RESPONSE GUIDELINES:
             # Transcribe with Whisper
             self.status_var.set("Status: Transcribing...")
             self.log("📝 Transcribing...")
-            logger.info("Starting Whisper transcription...")
+            logger.info(f"Starting transcription via {self.stt_backend} ({self.stt_device})...")
             
+            elapsed_ms = 0
             if hasattr(self, "dashboard") and self.dashboard:
+                self.dashboard.set_stt_backend(self.stt_backend, self.stt_device)
                 self.dashboard.set_transcribing_status(True)
             try:
-                result = self.stt_model.transcribe(temp_path, language='en')
-                text = result['text'].strip()
-                if not text:
-                    logger.info("Empty transcript on first pass, retrying Whisper with deterministic settings")
-                    retry_result = self.stt_model.transcribe(
-                        temp_path,
-                        language='en',
-                        fp16=False,
-                        temperature=0.0,
-                        condition_on_previous_text=False
-                    )
-                    text = retry_result['text'].strip()
+                text, elapsed_ms = self._transcribe_audio_file(temp_path)
             finally:
                 if hasattr(self, "dashboard") and self.dashboard:
                     self.dashboard.set_transcribing_status(False)
+                    self.dashboard.set_stt_last_latency(elapsed_ms)
             
             # Clean up temp file
             try:
@@ -3540,16 +3681,18 @@ RESPONSE GUIDELINES:
             
             # Transcribe with Whisper
             self.status_var.set("Status: 📝 Transcribing...")
-            logger.info("Transcribing continuous speech...")
+            logger.info(f"Transcribing continuous speech via {self.stt_backend} ({self.stt_device})...")
             
+            elapsed_ms = 0
             if hasattr(self, "dashboard") and self.dashboard:
+                self.dashboard.set_stt_backend(self.stt_backend, self.stt_device)
                 self.dashboard.set_transcribing_status(True)
             try:
-                result = self.stt_model.transcribe(temp_path, language='en')
+                text, elapsed_ms = self._transcribe_audio_file(temp_path)
             finally:
                 if hasattr(self, "dashboard") and self.dashboard:
                     self.dashboard.set_transcribing_status(False)
-            text = result['text'].strip()
+                    self.dashboard.set_stt_last_latency(elapsed_ms)
             
             # Clean up
             try:

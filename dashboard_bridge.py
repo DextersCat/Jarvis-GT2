@@ -45,6 +45,11 @@ class DashboardBridge:
         
         # One-shot metric tracking
         self.is_transcribing = False
+        self.stt_backend = "none"
+        self.stt_device = "none"
+        self.last_stt_latency_ms = 0
+        self.last_stt_display_time = 0.0
+        self.last_stt_display_value = 0
         self.last_ollama_response_time = 0
         self.last_ollama_display_time = 0.0
         self.last_ollama_display_value = 0
@@ -146,8 +151,20 @@ class DashboardBridge:
             logger.error(f"Error processing dashboard message: {e}")
     
     def set_transcribing_status(self, status: bool):
-        """Set by Jarvis to indicate STT activity for NPU metric simulation."""
+        """Set by Jarvis to indicate active STT transcription window."""
         self.is_transcribing = status
+
+    def set_stt_backend(self, backend: str, device: str):
+        """Set active STT backend/device for accurate NPU metric behavior."""
+        self.stt_backend = (backend or "none").lower()
+        self.stt_device = (device or "none").upper()
+
+    def set_stt_last_latency(self, ms: int):
+        """Track recent STT latency and briefly reflect activity on NPU gauge."""
+        self.last_stt_latency_ms = max(0, int(ms))
+        self.last_stt_display_time = time.time()
+        # Convert latency to a small post-transcription usage pulse.
+        self.last_stt_display_value = max(8, min(30, int(self.last_stt_latency_ms / 80)))
 
     def set_last_ollama_response_time(self, ms: int):
         """Set by Jarvis after an LLM call to show response time."""
@@ -207,8 +224,14 @@ class DashboardBridge:
             if gpu_temp == 0:
                 gpu_temp = 45 + (cpu_percent * 0.3)  # 45-75°C range
             
-            # Simulated NPU usage - active only during transcription
-            npu_usage = 75 if self.is_transcribing else 0
+            # NPU usage: only non-zero when STT backend can use NPU.
+            npu_usage = 0
+            npu_capable = self.stt_backend == "openvino-whisper" and self.stt_device in {"NPU", "AUTO"}
+            if npu_capable:
+                if self.is_transcribing:
+                    npu_usage = 75 if self.stt_device == "NPU" else 55
+                elif (time.time() - self.last_stt_display_time) <= 5:
+                    npu_usage = self.last_stt_display_value
 
             # Ollama response time (retain briefly so UI can render it clearly)
             ollama_ms = self.last_ollama_response_time
