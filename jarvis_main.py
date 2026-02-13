@@ -54,6 +54,7 @@ import numpy as np
 import psutil
 import collections
 import re
+from urllib.parse import urlparse
 from flask import Flask, request, jsonify
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
@@ -332,6 +333,7 @@ INTENTS = {
     },
     "NEWS": {
         "keywords": ["news", "headline", "headlines", "morning briefing", "uk news", "today's news", "news today"],
+        "blockers": ["search the web", "search web", "google", "look up", "find on the web"],
         "handler": "handle_news_request", "name": "get news headlines"
     },
     "SYSTEM_SPECS": {
@@ -1896,6 +1898,34 @@ Summary (concise, action-item focused):"""
             return ""
         return f"https://mail.google.com/mail/u/0/#inbox/{email_id}"
 
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        """Extract a readable source domain for dashboard cards."""
+        try:
+            host = (urlparse(url).netloc or "").lower()
+            if host.startswith("www."):
+                host = host[4:]
+            return host or "unknown source"
+        except Exception:
+            return "unknown source"
+
+    @staticmethod
+    def _extract_date_hint(text: str) -> str:
+        """Best-effort extraction of date-like hints from snippet text."""
+        if not text:
+            return ""
+        m = re.search(
+            r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2},\s+\d{4}\b",
+            text,
+            re.IGNORECASE
+        )
+        if m:
+            return m.group(0)
+        m = re.search(r"\b\d{1,2}\s+(?:hours?|days?|weeks?|months?)\s+ago\b", text, re.IGNORECASE)
+        if m:
+            return m.group(0)
+        return ""
+
     def handle_web_search(self, user_request: str):
         """Search the web, store results as wr* session items, and update dashboard."""
         remove_phrases = [
@@ -1921,10 +1951,13 @@ Summary (concise, action-item focused):"""
 
         cards = []
         summary_seed = []
+        card_items = []
         for idx, item in enumerate(results[:5], 1):
             title = item.get('title', 'Untitled').split('|')[0].strip()
             snippet = item.get('snippet', '')
             url = item.get('link')
+            source = self._extract_domain(url)
+            date_hint = self._extract_date_hint(snippet)
             ledger_entry = self.conversational_ledger.add_entry(
                 item_type='w',
                 description=f"Web result: {title}",
@@ -1939,14 +1972,55 @@ Summary (concise, action-item focused):"""
                 metadata={'title': title, 'snippet': snippet, 'url': url}
             )
             md_link = f"[Open Link]({url})" if url else "Open Link unavailable"
-            summary_snippet = self._two_sentence_snippet(snippet)
-            cards.append(
-                f"### [WEB RESULT {idx}] {title}\n"
-                f"{summary_snippet}\n\n"
-                f"{md_link}\n"
-            )
+            summary_snippet = self._two_sentence_snippet(snippet, max_chars=380)
+            context_line = f"Source: {source}" + (f" | Date hint: {date_hint}" if date_hint else "")
+            card_items.append({
+                "idx": idx,
+                "title": title,
+                "context_line": context_line,
+                "summary_snippet": summary_snippet,
+                "md_link": md_link,
+                "url": url or "N/A"
+            })
             summary_seed.append(
-                f"{idx}. {title}\nSummary Snippet: {summary_snippet}\nURL: {url or 'N/A'}"
+                f"{idx}. {title}\nSource: {source}\nSnippet: {summary_snippet}\nURL: {url or 'N/A'}"
+            )
+
+        # Enrich cards with a compact, non-generic "why it matters" line per result.
+        why_map = {}
+        try:
+            why_prompt = (
+                "For each result below, write one practical line for why it matters to the user's query. "
+                "Keep each line under 14 words, specific, and non-generic. "
+                "Format strictly as:\n"
+                "1: <line>\n2: <line>\n...\n\n"
+                f"User query: {query}\n\n"
+                "Results:\n"
+                + "\n\n".join(
+                    f"{r['idx']}. {r['title']}\nSnippet: {r['summary_snippet']}\nURL: {r['url']}"
+                    for r in card_items
+                )
+            )
+            why_text = self.call_smart_model(why_prompt, timeout=15, tier="fast")
+            for line in str(why_text).splitlines():
+                m = re.match(r"^\s*(\d+)\s*[:\-]\s*(.+?)\s*$", line.strip())
+                if not m:
+                    continue
+                idx = int(m.group(1))
+                if 1 <= idx <= len(card_items):
+                    why_map[idx] = m.group(2).strip()
+        except Exception as e:
+            logger.debug(f"Web card enrichment fallback used: {e}")
+
+        for row in card_items:
+            idx = row["idx"]
+            why_line = why_map.get(idx) or f"Likely useful for decisions on '{query}'."
+            cards.append(
+                f"### [WEB RESULT {idx}] {row['title']}\n"
+                f"{row['context_line']}\n\n"
+                f"{row['summary_snippet']}\n\n"
+                f"{row['md_link']}\n\n"
+                f"Why it matters: {why_line}\n"
             )
 
         focus_content = "\n\n".join(cards)
@@ -1956,13 +2030,16 @@ Summary (concise, action-item focused):"""
 
         summary_prompt = (
             "You are assisting Spencer (the Master). "
-            "Do not just say you found a list. "
-            "Provide a 3-bullet point summary of the most important insights from these results "
-            "so the Master can decide which one to dig into.\n\n"
+            "Do NOT read each headline one-by-one. "
+            "Synthesize patterns across results and surface decision-useful insight. "
+            "Provide exactly 3 bullets with this structure:\n"
+            "- Trend: the strongest cross-source trend\n"
+            "- What changed: notable shift/new development\n"
+            "- What to watch next: practical next step or risk\n\n"
             f"Search query: {query}\n\n"
             "Results:\n"
             f"{chr(10).join(summary_seed)}\n\n"
-            "Return exactly 3 concise bullets."
+            "Return only the 3 bullets. Keep each bullet under 24 words."
         )
         spoken_summary = self.call_smart_model(summary_prompt, timeout=90)
         self.speak(spoken_summary)
