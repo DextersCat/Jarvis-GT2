@@ -17,6 +17,34 @@ const levelColors: Record<string, { text: string; badge: string }> = {
   speak: { text: "rgb(244,114,182)", badge: "rgba(244,114,182,0.12)" },
 };
 
+function normalizeMojibake(input: string): string {
+  if (!input) return input;
+  let text = input;
+  try {
+    // Recover common UTF-8-as-cp1252 mojibake.
+    text = decodeURIComponent(escape(text));
+  } catch {
+    // No-op fallback below.
+  }
+  const replacements: Record<string, string> = {
+    "ðŸ‘‚": "👂",
+    "ðŸŽ¤": "🎤",
+    "ðŸ“": "📝",
+    "ðŸ“§": "📧",
+    "ðŸ“Š": "📊",
+    "ðŸ’¬": "💬",
+    "âš ï¸": "⚠️",
+    "âš ï¸": "⚠️",
+    "âœ“": "✓",
+    "âŒ": "❌",
+    "â†’": "→",
+  };
+  for (const [bad, good] of Object.entries(replacements)) {
+    text = text.split(bad).join(good);
+  }
+  return text;
+}
+
 export function TerminalLog({ logs }: TerminalLogProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -71,6 +99,10 @@ export function TerminalLog({ logs }: TerminalLogProps) {
               <motion.div
                 key={log.id}
                 className="flex items-start gap-2 py-1 px-1.5 rounded-sm font-mono text-[11px] leading-relaxed"
+                style={{
+                  fontFamily:
+                    'Cascadia Mono, "JetBrains Mono", Consolas, "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", monospace',
+                }}
                 initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ duration: 0.2 }}
@@ -88,7 +120,7 @@ export function TerminalLog({ logs }: TerminalLogProps) {
                   {log.level}
                 </span>
                 <span style={{ color: levelStyle.text, opacity: 0.85 }}>
-                  {log.message}
+                  {normalizeMojibake(log.message)}
                 </span>
               </motion.div>
             );

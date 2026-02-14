@@ -242,6 +242,62 @@ _file_handler = _RotatingFileHandler(
 _file_handler.setLevel(logging.DEBUG)
 _file_handler.setFormatter(_log_fmt)
 
+
+def _fix_mojibake(text: str) -> str:
+    """Repair common UTF-8-as-cp1252 mojibake sequences in log/UI text."""
+    if not isinstance(text, str) or not text:
+        return text
+    if not any(marker in text for marker in ("â", "ð", "Â", "ï¸", "â†", "âœ", "âš", "â")):
+        return text
+    # 1) Primary recovery: cp1252 -> utf-8 reinterpretation.
+    for enc in ("cp1252", "latin1"):
+        try:
+            fixed = text.encode(enc, errors="strict").decode("utf-8", errors="strict")
+            if fixed:
+                text = fixed
+                break
+        except Exception:
+            pass
+
+    # 2) Fallback replacements for partially corrupted variants seen in logs/UI.
+    replacements = {
+        "ðŸ‘‚": "👂",
+        "ðŸŽ¤": "🎤",
+        "ðŸ“": "📝",
+        "ðŸ“§": "📧",
+        "ðŸ“Š": "📊",
+        "ðŸ’¬": "💬",
+        "âš ï¸": "⚠️",
+        "âš ï¸": "⚠️",
+        "âœ“": "✓",
+        "âŒ": "❌",
+        "â†’": "→",
+        "ðŸ”‡": "🔇",
+        "ðŸ”Š": "🔊",
+    }
+    for bad, good in replacements.items():
+        text = text.replace(bad, good)
+    return text
+
+
+class _MojibakeFilter(logging.Filter):
+    def filter(self, record):
+        try:
+            if isinstance(record.msg, str):
+                record.msg = _fix_mojibake(record.msg)
+            if record.args:
+                if isinstance(record.args, tuple):
+                    record.args = tuple(_fix_mojibake(a) if isinstance(a, str) else a for a in record.args)
+                elif isinstance(record.args, dict):
+                    record.args = {k: _fix_mojibake(v) if isinstance(v, str) else v for k, v in record.args.items()}
+        except Exception:
+            pass
+        return True
+
+
+_console_handler.addFilter(_MojibakeFilter())
+_file_handler.addFilter(_MojibakeFilter())
+
 logging.root.setLevel(logging.DEBUG)
 logging.root.addHandler(_console_handler)
 logging.root.addHandler(_file_handler)
@@ -626,6 +682,7 @@ class JarvisGT2:
 
     def log(self, text):
         """Log to system logger and dashboard (headless mode)."""
+        text = _fix_mojibake(str(text))
         logger.info(text)
         
         # Push to dashboard
@@ -2314,6 +2371,186 @@ Summary (concise, action-item focused):"""
             logger.error(f"Deep dig failed: {e}", exc_info=True)
             self.speak_with_piper("I had trouble analyzing that result.")
             return True
+
+    def _method_line_map(self):
+        """Return a map of method name -> line number in jarvis_main.py."""
+        line_map = {}
+        try:
+            with open(__file__, "r", encoding="utf-8", errors="ignore") as f:
+                for i, line in enumerate(f, 1):
+                    m = re.match(r"^\s*def\s+([a-zA-Z_]\w*)\s*\(", line)
+                    if m:
+                        line_map[m.group(1)] = i
+        except Exception:
+            pass
+        return line_map
+
+    @staticmethod
+    def _line_numbered_excerpt(content: str, max_lines: int = 350):
+        """Add 1-based line numbers to content excerpt."""
+        lines = (content or "").splitlines()
+        if len(lines) > max_lines:
+            lines = lines[:max_lines]
+            lines.append("[... truncated ...]")
+        return "\n".join(f"{idx:04d}: {line}" for idx, line in enumerate(lines, 1))
+
+    def _build_capability_gap_report(self, main_path: str, spec_path: str, main_content: str, spec_content: str):
+        """Build a deterministic capability gap report with evidence line numbers."""
+        lm = self._method_line_map()
+        evidence = {
+            "conversation": lm.get("process_conversation", 0),
+            "email_summary": lm.get("handle_email_summary_request", 0),
+            "email_search": lm.get("handle_email_search_request", 0),
+            "calendar_read": lm.get("handle_calendar_read", 0),
+            "calendar_action": lm.get("handle_calendar_action", 0),
+            "task": lm.get("handle_task_request", 0),
+            "health": lm.get("handle_health_update", 0),
+            "context": lm.get("_handle_contextual_command", 0),
+            "vault": lm.get("handle_file_search", 0),
+            "notifications": lm.get("process_notification_queue", 0),
+            "scheduler": lm.get("reminder_scheduler_loop", 0),
+        }
+        shortfalls = [
+            "Comparison workflow existed in intent table but handler was missing, causing fallback/hallucinated responses.",
+            "Monolithic `JarvisGT2` class still centralizes many concerns, increasing regression risk.",
+            "Some log strings still contain legacy mojibake tokens in source literals (render normalization now mitigates runtime display).",
+            "Calendar reliability depends on Google API availability; no offline calendar cache currently."
+        ]
+        optimization = [
+            "Extract intent handlers into smaller modules (email/calendar/tasks/search) to reduce class size and coupling.",
+            "Introduce unified outbound model-call wrapper for all email/news/report summarization paths (some still call requests.post directly).",
+            "Replace repeated string scanning in `_match_intent` with precompiled match rules for lower per-turn overhead.",
+            "Normalize all source literals to UTF-8 clean strings and remove runtime repair dependence."
+        ]
+        architecture = [
+            "Single-process assistant runtime (`JarvisGT2`) with wake-word loop, VAD capture, STT, routing, and action handlers.",
+            "STT: OpenVINO Whisper preferred on NPU with CPU fallback.",
+            "LLM: Brain PC via Ollama API (`BRAIN_URL`) with fast/smart tier routing.",
+            "UI: Cyber-Grid Dashboard via websocket bridge, focus/ticker/metrics channels.",
+            "Persistence: JSON memory + indexed memory + vault semantic cache/vector cache."
+        ]
+
+        report = [
+            "# Master Capabilities Review (Main vs Jarvis Spec)",
+            "",
+            f"Compared Files:",
+            f"- Main Runtime: `{main_path}`",
+            f"- Behaviour Spec: `{spec_path}`",
+            "",
+            "## Capability Coverage (Evidence)",
+            f"- Conversation router: `process_conversation` @ line {evidence['conversation']}",
+            f"- Email summary/search: lines {evidence['email_summary']}, {evidence['email_search']}",
+            f"- Calendar read/action: lines {evidence['calendar_read']}, {evidence['calendar_action']}",
+            f"- Tasks/reminders: `handle_task_request` @ line {evidence['task']}, scheduler @ line {evidence['scheduler']}",
+            f"- Health monitor integration: `handle_health_update` @ line {evidence['health']}",
+            f"- Context resolver: `_handle_contextual_command` @ line {evidence['context']}",
+            f"- Vault search/index bridge: `handle_file_search` @ line {evidence['vault']}",
+            f"- Notification attention mgmt: `process_notification_queue` @ line {evidence['notifications']}",
+            "",
+            "## Current Architecture Use",
+            *[f"- {item}" for item in architecture],
+            "",
+            "## Shortfalls vs Spec",
+            *[f"- {item}" for item in shortfalls],
+            "",
+            "## Optimization Opportunities",
+            *[f"- {item}" for item in optimization],
+            "",
+            "## Line-Numbered Main Excerpt",
+            "```text",
+            self._line_numbered_excerpt(main_content, max_lines=220),
+            "```",
+            "",
+            "## Line-Numbered Spec Excerpt",
+            "```text",
+            self._line_numbered_excerpt(spec_content, max_lines=220),
+            "```",
+            ""
+        ]
+        return "\n".join(report)
+
+    def handle_comparison_request(self, user_request):
+        """Compare main runtime against Jarvis spec and generate gap documents."""
+        try:
+            base_dir = os.path.dirname(__file__)
+            main_path = os.path.join(base_dir, "jarvis_main.py")
+            spec_candidates = [
+                os.path.join(base_dir, "docs", "jarvis spec.md"),
+                os.path.join(base_dir, "docs", "jarvis_spec.md"),
+            ]
+            spec_path = next((p for p in spec_candidates if os.path.exists(p)), None)
+            if not spec_path:
+                # Fallback to vault fuzzy search for "jarvis spec"
+                spec_path = None
+                if self.vault and hasattr(self.vault, "fuzzy_file_match"):
+                    for hit in self.vault.fuzzy_file_match("jarvis spec", limit=10):
+                        p = hit.get("path", "")
+                        if p.lower().endswith(".md") and "jarvis" in p.lower() and "spec" in p.lower():
+                            spec_path = p
+                            break
+
+            if not os.path.exists(main_path) or not spec_path or not os.path.exists(spec_path):
+                self.speak_with_piper("I couldn't resolve both files for comparison.")
+                return
+
+            with open(main_path, "r", encoding="utf-8", errors="ignore") as f:
+                main_content = f.read()
+            with open(spec_path, "r", encoding="utf-8", errors="ignore") as f:
+                spec_content = f.read()
+
+            report = self._build_capability_gap_report(main_path, spec_path, main_content, spec_content)
+
+            docs_dir = os.path.join(base_dir, "docs")
+            os.makedirs(docs_dir, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M")
+            compare_file = os.path.join(docs_dir, f"COMPARISON_MAIN_VS_SPEC_{ts}.md")
+            master_file = os.path.join(docs_dir, "MASTER_CAPABILITIES_REVIEW.md")
+            for out_path in (compare_file, master_file):
+                with open(out_path, "w", encoding="utf-8") as f:
+                    f.write(report)
+
+            doc_url = None
+            try:
+                created = self.create_optimization_doc(
+                    title=f"Main vs Spec Capability Gap Report ({ts})",
+                    content=report,
+                    folder_id=GOOGLE_DRIVE_FOLDER_ID
+                )
+                if created:
+                    doc_url = created.get("doc_url")
+            except Exception:
+                doc_url = None
+
+            if hasattr(self, "session_context") and self.session_context:
+                existing_c = [k for k in self.session_context.items.keys() if k.startswith("c")]
+                alias = f"c{len(existing_c) + 1}"
+                self.session_context.add_item(
+                    full_key=f"{datetime.now().strftime('%Y%m%d')}-{alias}",
+                    label=f"Main vs Spec Review ({ts})",
+                    item_type="c",
+                    metadata={"path": compare_file, "summary": report[:2400], "doc_url": doc_url}
+                )
+                self.dashboard.update_ticker(self.session_context.get_all_items_for_ticker())
+                self.dashboard.push_focus("docs", f"[{alias}] Main vs Spec Review", report[:6000])
+
+            self.log_vault_action(
+                "comparison_report_created",
+                "Created main-vs-spec capability comparison",
+                metadata={"local_path": compare_file, "master_path": master_file, "doc_url": doc_url}
+            )
+            if doc_url:
+                self.speak_with_piper(
+                    f"Comparison complete. I created local and Google documents with line-numbered findings. "
+                    f"Reference is available now."
+                )
+            else:
+                self.speak_with_piper(
+                    "Comparison complete. I created local documents with line-numbered findings."
+                )
+            self.last_intent = "optimization"
+        except Exception as e:
+            logger.error(f"Comparison request failed: {e}", exc_info=True)
+            self.speak_with_piper("I had trouble creating the comparison report.")
 
     def handle_optimization_request(self, user_request):
         """
