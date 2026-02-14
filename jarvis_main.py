@@ -1,4 +1,4 @@
-import customtkinter as ctk
+﻿import customtkinter as ctk
 import pvporcupine
 from pvrecorder import PvRecorder
 import threading
@@ -107,13 +107,13 @@ def check_credentials():
         print("WARNING: MISSING CREDENTIAL FILES")
         print("="*60)
         for file in missing_files:
-            print(f"  ✗ {file} not found in current directory")
+            print(f"  âœ— {file} not found in current directory")
         print("\nGoogle API integration will fail without these files.")
         print("Please ensure credentials.json and token.json are present.")
         print("="*60 + "\n")
         return False
     else:
-        print("✓ Credentials check passed: credentials.json and token.json found.")
+        print("âœ“ Credentials check passed: credentials.json and token.json found.")
         return True
 
 def get_google_creds():
@@ -228,7 +228,7 @@ SMART_LLM_MODEL = config_dict.get("smart_llm_model", LLM_MODEL)
 SMART_LLM_TIMEOUT = float(config_dict.get("smart_llm_timeout", 5))
 VAD_SETTINGS = config_dict["vad_settings"]
 
-# Configure logging — console at INFO, rotating file at DEBUG
+# Configure logging â€” console at INFO, rotating file at DEBUG
 from logging.handlers import RotatingFileHandler as _RotatingFileHandler
 
 _log_fmt = logging.Formatter('[%(asctime)s] %(levelname)s %(name)s: %(message)s', datefmt='%H:%M:%S')
@@ -248,8 +248,8 @@ logging.root.addHandler(_file_handler)
 
 logger = logging.getLogger(__name__)
 
-# Topic anchor nouns — used by memory deduplication to identify a fact's subject.
-# Two facts sharing ≥1 anchor noun are treated as being about the same topic.
+# Topic anchor nouns â€” used by memory deduplication to identify a fact's subject.
+# Two facts sharing â‰¥1 anchor noun are treated as being about the same topic.
 _MEMORY_ANCHORS: frozenset = frozenset({
     'car', 'vehicle', 'van', 'truck', 'bike', 'motorcycle', 'scooter', 'transport',
     'job', 'work', 'role', 'company', 'employer', 'career', 'profession', 'salary',
@@ -432,6 +432,8 @@ class JarvisGT2:
         self.memory = self.load_memory()
         self.current_llm_tier = "smart"
         self.ui_mode = "normal"
+        self.health_break_interval_secs = 2 * 60 * 60
+        self.next_health_break_reminder_ts = None
         
         # VAD parameters - loaded from config
         self.vad_threshold = VAD_SETTINGS.get("energy_threshold", 500)
@@ -458,11 +460,11 @@ class JarvisGT2:
         # Initialize Vault Reference System
         self.vault = VaultReference()
         if self.vault.is_loaded:
-            logger.info("✓ Vault index loaded - file reference system active")
-            self.log("✓ Vault reference system active")
+            logger.info("âœ“ Vault index loaded - file reference system active")
+            self.log("âœ“ Vault reference system active")
         else:
-            logger.warning("⚠ Vault index not available - file searches may be limited")
-            self.log("⚠ Vault index not loaded - generate with: python create_vault_index.py")
+            logger.warning("âš  Vault index not available - file searches may be limited")
+            self.log("âš  Vault index not loaded - generate with: python create_vault_index.py")
         
         # Initialize Dashboard Bridge
         self.dashboard = DashboardBridge()
@@ -472,8 +474,8 @@ class JarvisGT2:
         self.dashboard.set_stt_backend(self.stt_backend, self.stt_device)
         
         logger.info("Jarvis GT2 initializing...")
-        logger.info("🌐 UI handled by Cyber-Grid Dashboard at http://localhost:5000") 
-        logger.info("🔊 Running in HEADLESS mode - no Tkinter GUI")
+        logger.info("ðŸŒ UI handled by Cyber-Grid Dashboard at http://localhost:5000") 
+        logger.info("ðŸ”Š Running in HEADLESS mode - no Tkinter GUI")
         logger.info("System initialized successfully")
         
         # Initialize n8n webhook listener for priority notifications
@@ -592,7 +594,7 @@ class JarvisGT2:
     def start_listening(self):
         """Start wake word detection automatically."""
         if not self.gaming_mode and not self.is_listening:
-            self.log("🎤 Starting wake word detection...")
+            self.log("ðŸŽ¤ Starting wake word detection...")
             logger.info("Auto-starting wake word detection (Normal Mode)")
             self.is_listening = True
             self.wake_word_thread = threading.Thread(target=self.run_wake_word_loop, daemon=True)
@@ -635,9 +637,9 @@ class JarvisGT2:
             # AI responses are 'speak' level, not 'error', even if they contain "error"
             if "JARVIS:" in upper_text:
                 level = "speak"
-            elif "❌" in text or "ERROR" in upper_text or "FAILED" in upper_text:
+            elif "âŒ" in text or "ERROR" in upper_text or "FAILED" in upper_text:
                 level = "error"
-            elif "⚠" in text or "WARN" in upper_text:
+            elif "âš " in text or "WARN" in upper_text:
                 level = "warn"
             elif "LISTENING" in upper_text or "WAKE WORD" in upper_text:
                 level = "listen"
@@ -645,7 +647,7 @@ class JarvisGT2:
                 level = "process"
             elif "SPEAK" in upper_text or "TTS" in upper_text:
                 level = "speak"
-            elif "✓" in text or "SUCCESS" in upper_text or "COMPLETE" in upper_text:
+            elif "âœ“" in text or "SUCCESS" in upper_text or "COMPLETE" in upper_text:
                 level = "success"
             
             self.dashboard.push_log(level, text)
@@ -657,7 +659,7 @@ class JarvisGT2:
             "master_coordinates": {"latitude": LATITUDE, "longitude": LONGITUDE},
             "master_profile": {
                 "name": "Spencer",
-                "working_method": "Research → Propose → Test → Verify",
+                "working_method": "Research â†’ Propose â†’ Test â†’ Verify",
                 "communication_style": "Concise, low-friction, health-conscious",
                 "health_profile": {
                     "chronic_pain": True,
@@ -672,7 +674,7 @@ class JarvisGT2:
                 "My location is Kent with coordinates 51.172096, 0.498793",
                 "I use Ollama with llama3.1:8b as my brain",
                 "I can search the web and access Google services",
-                "Spencer works using: Research → Propose → Test → Verify method",
+                "Spencer works using: Research â†’ Propose â†’ Test â†’ Verify method",
                 "Spencer manages chronic pain and anxiety"
             ],
             "projects": {
@@ -693,7 +695,7 @@ class JarvisGT2:
             try:
                 with open(self.memory_file, 'r') as f:
                     memory = json.load(f)
-                    logger.info("✓ Memory loaded from disk")
+                    logger.info("âœ“ Memory loaded from disk")
                     return memory
             except Exception as e:
                 logger.warning(f"Failed to load memory: {e}, using defaults")
@@ -710,10 +712,79 @@ class JarvisGT2:
         try:
             # Save through memory index (handles vault_actions automatically)
             self.memory_index.save(memory)
-            logger.info("✓ Memory saved to disk")
+            logger.info("âœ“ Memory saved to disk")
         except Exception as e:
             logger.error(f"Failed to save memory: {e}")
     
+    def _read_recent_health_logs(self, hours: int = 24, limit: int = 200):
+        """Read recent health logs from disk for trend-aware responses."""
+        path = os.path.join(os.path.dirname(__file__), "health", "health_log.jsonl")
+        if not os.path.exists(path):
+            return []
+        cutoff = datetime.now() - timedelta(hours=hours)
+        rows = []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        item = json.loads(line)
+                    except Exception:
+                        continue
+                    ts = item.get("timestamp")
+                    if not ts:
+                        continue
+                    try:
+                        dt = datetime.fromisoformat(ts)
+                    except Exception:
+                        continue
+                    if dt >= cutoff:
+                        item["_dt"] = dt
+                        rows.append(item)
+            rows.sort(key=lambda x: x.get("_dt"))
+            if len(rows) > limit:
+                rows = rows[-limit:]
+        except Exception as e:
+            logger.error(f"Failed reading health log history: {e}")
+        return rows
+
+    @staticmethod
+    def _health_trend_from_rows(rows, metric_type: str):
+        vals = [r.get("level") for r in rows if r.get("type") == metric_type and isinstance(r.get("level"), int)]
+        if len(vals) < 2:
+            return "stable"
+        delta = vals[-1] - vals[0]
+        if delta >= 1:
+            return "worsening"
+        if delta <= -1:
+            return "improving"
+        return "stable"
+
+    def _health_break_summary(self):
+        """Build a concise summary for break reminders using current snapshot + trend."""
+        snapshot_path = os.path.join(os.path.dirname(__file__), "health", "health_snapshot.json")
+        snapshot = {}
+        try:
+            if os.path.exists(snapshot_path):
+                with open(snapshot_path, "r", encoding="utf-8") as f:
+                    snapshot = json.load(f) or {}
+        except Exception:
+            snapshot = {}
+
+        rows = self._read_recent_health_logs(hours=24)
+        pain = snapshot.get("pain", {})
+        anxiety = snapshot.get("anxiety", {})
+        pain_level = pain.get("level_name", "Unknown")
+        anxiety_level = anxiety.get("level_name", "Unknown")
+        pain_trend = self._health_trend_from_rows(rows, "pain")
+        anxiety_trend = self._health_trend_from_rows(rows, "anxiety")
+        return (
+            f"Current health snapshot: pain {pain_level} ({pain_trend}), "
+            f"anxiety {anxiety_level} ({anxiety_trend})."
+        )
+
     def handle_health_update(self, metric_type: str, level: int):
         """Handle health updates from dashboard (mood/pain tracker).
         
@@ -754,27 +825,36 @@ class JarvisGT2:
             with open(health_snapshot_path, "w", encoding="utf-8") as snapshot_file:
                 json.dump(snapshot, snapshot_file, indent=2)
         except Exception as e:
-            logger.error(f"Failed to write health log: {e}")
-        
-        # Store in memory
+            logger.error(f"Failed to write health log: {e}")        # Store in memory
         if "health_logs" not in self.memory:
             self.memory["health_logs"] = []
         self.memory["health_logs"].append(health_record)
         self.save_memory()
+        self.next_health_break_reminder_ts = time.time() + self.health_break_interval_secs
         
         self.log(f"📊 Health logged: {metric_type.title()} = {level_name}")
+        rows_24h = self._read_recent_health_logs(hours=24)
+        trend = self._health_trend_from_rows(rows_24h, metric_type)
+        trend_text = {
+            "improving": "You're trending better over the last day.",
+            "worsening": "It looks a bit worse than earlier, so let's pace gently.",
+            "stable": "This looks fairly stable for now."
+        }.get(trend, "This looks fairly stable for now.")
         
         # If pain is severe, switch to concise/dim interaction profile.
         if metric_type == "pain" and level_name == "Severe":
             self.ui_mode = "concise"
             if hasattr(self, "dashboard") and self.dashboard and hasattr(self.dashboard, "push_ui_adjust"):
                 self.dashboard.push_ui_adjust(mode="concise", theme="dim")
-            response = "I've logged your pain level, Sir. I will keep our responses concise to save your energy."
+            response = "I've logged severe pain. I'll keep responses concise. " + trend_text
             self.log(f"Jarvis: {response}")
             self.speak_with_piper(response)
         elif metric_type == "pain" and level_name in {"None", "Mild", "Moderate"}:
             # Allow UI/session to return to standard mode when pain subsides.
             self.ui_mode = "normal"
+            self.speak_with_piper(f"I've logged that. {trend_text}")
+        elif metric_type == "anxiety":
+            self.speak_with_piper(f"Anxiety logged as {level_name}. {trend_text}")
     
     def handle_dashboard_state_change(self, key: str, value: bool):
         """Handle state changes from dashboard UI toggles.
@@ -786,38 +866,38 @@ class JarvisGT2:
         if key == "gamingMode":
             self.gaming_mode = value
             if value:
-                self.log("🎮 Gaming Mode: ENABLED")
-                self.log("   → Mic disabled, resources freed")
+                self.log("ðŸŽ® Gaming Mode: ENABLED")
+                self.log("   â†’ Mic disabled, resources freed")
                 logger.info("Gaming mode activated - stopping all listening and freeing resources")
                 self.is_listening = False
                 # Update dashboard
                 self.dashboard.push_state(mode="idle")
             else:
-                self.log("🎮 Gaming Mode: DISABLED")
-                self.log("   → Resuming normal operation")
+                self.log("ðŸŽ® Gaming Mode: DISABLED")
+                self.log("   â†’ Resuming normal operation")
                 logger.info("Gaming mode deactivated - resuming normal operation")
                 self.start_listening()
                 
         elif key == "muteMic":
             self.mic_muted = value
             if value:
-                self.log("🔇 Microphone: MUTED")
+                self.log("ðŸ”‡ Microphone: MUTED")
                 logger.info("Microphone muted - audio input will be ignored")
             else:
-                self.log("🔊 Microphone: UNMUTED")
+                self.log("ðŸ”Š Microphone: UNMUTED")
                 logger.info("Microphone unmuted - audio input active")
             self.dashboard.push_state(muteMic=value)
                 
         elif key == "conversationalMode":
             self.conversation_mode = value
             if value:
-                self.log("💬 Conversation Mode: ENABLED")
-                self.log("   → Open mic, natural dialogue")
+                self.log("ðŸ’¬ Conversation Mode: ENABLED")
+                self.log("   â†’ Open mic, natural dialogue")
                 if not self.is_listening:
                     self.start_listening()
             else:
-                self.log("💬 Conversation Mode: DISABLED")
-                self.log("   → Now requires wake word")
+                self.log("ðŸ’¬ Conversation Mode: DISABLED")
+                self.log("   â†’ Now requires wake word")
                 self.conversation_mode = False
             self.dashboard.push_state(conversationalMode=value)
     
@@ -853,7 +933,7 @@ class JarvisGT2:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
             
-            logger.info(f"✓ Read file: {file_path} ({len(content)} bytes)")
+            logger.info(f"âœ“ Read file: {file_path} ({len(content)} bytes)")
             
             # Log file read action to memory
             self.log_vault_action(
@@ -911,7 +991,7 @@ class JarvisGT2:
             parents = file_info.get("parents", [])
             folder_id = parents[0] if parents else None
             if folder_id:
-                logger.info(f"✓ Resolved Drive folder ID from source doc: {folder_id}")
+                logger.info(f"âœ“ Resolved Drive folder ID from source doc: {folder_id}")
             return folder_id
         except Exception as e:
             logger.warning(f"Could not resolve Drive folder ID from source doc: {e}")
@@ -962,7 +1042,7 @@ class JarvisGT2:
             doc_id = doc.get('documentId')
             doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
             
-            logger.info(f"✓ Document created: {doc_url}")
+            logger.info(f"âœ“ Document created: {doc_url}")
             
             # Write content to the document
             if not content:
@@ -986,7 +1066,7 @@ class JarvisGT2:
                 body=requests_body
             ).execute()
             
-            logger.info(f"✓ Content written to document ({len(content)} bytes)")
+            logger.info(f"âœ“ Content written to document ({len(content)} bytes)")
             
             # Move document to specified folder if provided
             if resolved_folder_id:
@@ -1005,7 +1085,7 @@ class JarvisGT2:
                         fields='id, parents'
                     ).execute()
                     
-                    logger.info(f"✓ Document moved to folder: {resolved_folder_id}")
+                    logger.info(f"âœ“ Document moved to folder: {resolved_folder_id}")
                 except HttpError as e:
                     status = getattr(e.resp, "status", None)
                     if status == 404 and GOOGLE_DRIVE_FOLDER_SOURCE_DOC_ID:
@@ -1022,7 +1102,7 @@ class JarvisGT2:
                                     fields='id, parents'
                                 ).execute()
                                 resolved_folder_id = fallback_id
-                                logger.info(f"✓ Document moved to folder: {resolved_folder_id}")
+                                logger.info(f"âœ“ Document moved to folder: {resolved_folder_id}")
                             except Exception as retry_error:
                                 logger.warning(f"Could not move document to fallback folder: {retry_error}")
                         else:
@@ -1054,7 +1134,7 @@ class JarvisGT2:
             
         except Exception as e:
             logger.error(f"Error creating Google Doc: {e}", exc_info=True)
-            self.log(f"❌ Error creating doc: {e}")
+            self.log(f"âŒ Error creating doc: {e}")
             return None
     
     def log_vault_action(self, action_type, description, metadata=None):
@@ -1097,7 +1177,7 @@ class JarvisGT2:
             recent_docs = self.memory_index.search_by_type('doc_created', limit=1)
             
             if not recent_docs:
-                self.log("❌ No optimization reports found in memory.")
+                self.log("âŒ No optimization reports found in memory.")
                 self.speak_with_piper("I don't have any saved optimization reports in my memory yet.")
                 return
             
@@ -1111,17 +1191,17 @@ class JarvisGT2:
             timestamp = last_report.get('timestamp', 'Unknown time')
             
             # Display report info
-            self.log(f"📄 Last Report: {doc_title}")
-            self.log(f"🕒 Created: {timestamp}")
-            self.log(f"🔗 URL: {doc_url}")
+            self.log(f"ðŸ“„ Last Report: {doc_title}")
+            self.log(f"ðŸ•’ Created: {timestamp}")
+            self.log(f"ðŸ”— URL: {doc_url}")
             
             # Read the document content from Google Docs
-            self.log("📖 Reading document content...")
+            self.log("ðŸ“– Reading document content...")
             self.speak_with_piper("Reading the optimization report now.")
             
             creds = get_google_creds()
             if not creds or not doc_id:
-                self.log("❌ Could not access document")
+                self.log("âŒ Could not access document")
                 self.speak_with_piper("I couldn't access the document.")
                 return
             
@@ -1136,10 +1216,10 @@ class JarvisGT2:
                         if 'textRun' in text_run:
                             doc_content += text_run['textRun'].get('content', '')
             
-            self.log(f"✓ Read {len(doc_content)} characters from document")
+            self.log(f"âœ“ Read {len(doc_content)} characters from document")
             
             # Send to brain for summarization
-            self.log("🧠 Analyzing report for summary...")
+            self.log("ðŸ§  Analyzing report for summary...")
             self.speak_with_piper("Analyzing the report for you.")
             
             summary_prompt = f"""Provide a concise 3-point executive summary of this code optimization report:
@@ -1166,14 +1246,14 @@ Keep it brief and actionable."""
             summary = response.json().get('response', 'Could not generate summary.')
             
             # Display and speak the summary
-            self.log("\n📊 SUMMARY:")
+            self.log("\nðŸ“Š SUMMARY:")
             self.log(summary)
             self.speak_with_piper(f"Here's the summary: {summary}")
             
             # Open in browser as well
             import webbrowser
             webbrowser.open(doc_url)
-            self.log(f"✓ Opened in browser: {doc_url}")
+            self.log(f"âœ“ Opened in browser: {doc_url}")
             
             # Log report retrieval action
             self.log_vault_action(
@@ -1190,7 +1270,7 @@ Keep it brief and actionable."""
             
         except Exception as e:
             logger.error(f"Error retrieving report: {e}", exc_info=True)
-            self.log(f"❌ Error retrieving report: {e}")
+            self.log(f"âŒ Error retrieving report: {e}")
             self.speak_with_piper("I encountered an error retrieving the report.")
     
     def handle_email_summary_request(self):
@@ -1205,7 +1285,7 @@ Keep it brief and actionable."""
             
             if gmail_emails:
                 # Use Gmail emails
-                self.log(f"📧 Found {len(gmail_emails)} recent email(s) in Gmail")
+                self.log(f"ðŸ“§ Found {len(gmail_emails)} recent email(s) in Gmail")
                 
                 # Format for LLM summarization
                 email_text = "RECENT EMAILS FROM GMAIL:\n"
@@ -1252,7 +1332,7 @@ Keep it brief and actionable."""
                 ]
                 
                 if not email_notifications:
-                    self.log("❌ No recent emails found")
+                    self.log("âŒ No recent emails found")
                     self.speak_with_piper("You don't have any recent emails.")
                     return
                 
@@ -1264,10 +1344,10 @@ Keep it brief and actionable."""
                     email_text += f"   Subject: {metadata.get('subject', 'No Subject')}\n"
                     email_text += f"   {email.get('message', '')}\n\n"
                 
-                self.log(f"📧 Found {len(email_notifications)} email(s) in queue")
+                self.log(f"ðŸ“§ Found {len(email_notifications)} email(s) in queue")
             
             # Send to brain for summarization
-            self.log("🧠 Generating AI summary...")
+            self.log("ðŸ§  Generating AI summary...")
             self.speak_with_piper("Summarizing your emails now.")
             
             summary_prompt = f"""Provide a brief executive summary of these emails in 2-3 sentences.
@@ -1290,7 +1370,7 @@ Summary (concise, action-item focused):"""
             summary = response.json().get('response', 'Could not generate summary.')
             
             # Display and speak the summary
-            self.log("\n📧 EMAIL SUMMARY:")
+            self.log("\nðŸ“§ EMAIL SUMMARY:")
             self.log(summary)
             self.speak_with_piper(f"Here's your email summary: {summary}")
             
@@ -1323,7 +1403,7 @@ Summary (concise, action-item focused):"""
             
         except Exception as e:
             logger.error(f"Error summarizing emails: {e}", exc_info=True)
-            self.log(f"❌ Error summarizing emails: {e}")
+            self.log(f"âŒ Error summarizing emails: {e}")
             self.speak_with_piper("I encountered an error summarizing your emails.")
     
     def _call_brain_model(self, prompt: str, model_name: str, timeout: float):
@@ -1400,7 +1480,7 @@ Summary (concise, action-item focused):"""
                     sender_query = from_match.group(1).strip()
             
             if not sender_query:
-                self.log("❌ Could not identify who to search for")
+                self.log("âŒ Could not identify who to search for")
                 self.speak_with_piper("Could you please specify whose emails you'd like me to search for?")
                 return
             
@@ -1414,25 +1494,25 @@ Summary (concise, action-item focused):"""
                 gmail_query += f" subject:{subject}"
             
             logger.info(f"Gmail search query: {gmail_query}")
-            self.log(f"🔍 Searching Gmail for: {sender_query}")
+            self.log(f"ðŸ” Searching Gmail for: {sender_query}")
             self.status_var.set("Status: Searching Gmail...")
             
             # Perform Gmail search
             emails = self.search_emails(gmail_query)
             
             if not emails:
-                self.log(f"❌ No emails found from {sender_query}")
+                self.log(f"âŒ No emails found from {sender_query}")
                 self.speak_with_piper(f"I didn't find any emails from {sender_query}.")
                 return
             
             # Format results for display and speaking
-            self.log(f"✓ Found {len(emails)} email(s)")
+            self.log(f"âœ“ Found {len(emails)} email(s)")
             
             # Prepare summary for user
             if len(emails) == 1:
                 email = emails[0]
                 summary = f"Found 1 email from {self.extract_sender_name(email['sender'])} with subject: {email['subject']}"
-                self.log(f"📧 From: {email['sender']}")
+                self.log(f"ðŸ“§ From: {email['sender']}")
                 self.log(f"   Subject: {email['subject']}")
                 self.log(f"   Preview: {email['snippet'][:100]}")
             else:
@@ -1509,7 +1589,7 @@ Summary (concise, action-item focused):"""
             
         except Exception as e:
             logger.error(f"Error searching emails: {e}", exc_info=True)
-            self.log(f"❌ Email search failed: {e}")
+            self.log(f"âŒ Email search failed: {e}")
             self.speak_with_piper("I encountered an error searching your emails.")
     
     def handle_email_reply_request(self, user_request):
@@ -1530,7 +1610,7 @@ Summary (concise, action-item focused):"""
             reply_match = re.search(r'(?:saying|with|message:?)\s+(.+?)$', user_request, re.IGNORECASE)
             
             if not reply_match:
-                self.log("❌ Could not identify reply message")
+                self.log("âŒ Could not identify reply message")
                 self.speak_with_piper("What would you like me to say in the reply?")
                 return
             
@@ -1543,7 +1623,7 @@ Summary (concise, action-item focused):"""
             recent_emails = self.get_recent_emails(limit=1)
             
             if not recent_emails:
-                self.log("❌ No recent emails found to reply to")
+                self.log("âŒ No recent emails found to reply to")
                 self.speak_with_piper("You don't have any recent emails to reply to.")
                 return
             
@@ -1552,7 +1632,7 @@ Summary (concise, action-item focused):"""
             email_id = email_to_reply['id']
             sender = email_to_reply['sender']
             
-            self.log(f"✉️ Replying to email from {self.extract_sender_name(sender)}")
+            self.log(f"âœ‰ï¸ Replying to email from {self.extract_sender_name(sender)}")
             self.log(f"   Message: {reply_text[:100]}")
             self.status_var.set("Status: Sending reply...")
             
@@ -1561,7 +1641,7 @@ Summary (concise, action-item focused):"""
             
             if success:
                 confirmation = f"Reply sent to {self.extract_sender_name(sender)}"
-                self.log(f"✓ {confirmation}")
+                self.log(f"âœ“ {confirmation}")
                 self.speak_with_piper(confirmation)
                 
                 # Log action
@@ -1575,12 +1655,12 @@ Summary (concise, action-item focused):"""
                     }
                 )
             else:
-                self.log("❌ Failed to send reply")
+                self.log("âŒ Failed to send reply")
                 self.speak_with_piper("I had trouble sending that reply.")
             
         except Exception as e:
             logger.error(f"Error replying to email: {e}", exc_info=True)
-            self.log(f"❌ Reply failed: {e}")
+            self.log(f"âŒ Reply failed: {e}")
             self.speak_with_piper("I encountered an error sending your reply.")
     
     def _handle_contextual_command(self, raw_text: str) -> bool:
@@ -2097,7 +2177,7 @@ Summary (concise, action-item focused):"""
                     f"{snippet}\n\n"
                     f"{md_link}\n"
                 )
-                summary_seed.append(f"{idx}. {title} — {snippet}")
+                summary_seed.append(f"{idx}. {title} â€” {snippet}")
 
             focus_content = "\n\n".join(cards)
             self.dashboard.push_focus("docs", "UK Headlines", focus_content)
@@ -2247,7 +2327,7 @@ Summary (concise, action-item focused):"""
         5. Confirm completion with the URL, adding a short-key to the session
         """
         try:
-            self.status_var.set("Status: 🔧 Analyzing code...")
+            self.status_var.set("Status: ðŸ”§ Analyzing code...")
             
             # Step 1: Extract which file the user wants to analyze
             text_lower = user_request.lower()
@@ -2274,7 +2354,7 @@ Summary (concise, action-item focused):"""
                     target_file = self.vault.search_file(filename)
             
             if not target_file:
-                self.log("❌ Could not identify which file to analyze. Please specify a file name.")
+                self.log("âŒ Could not identify which file to analyze. Please specify a file name.")
                 self.speak_with_piper("I couldn't identify which file you'd like me to analyze. Please be more specific.")
                 return
             
@@ -2285,13 +2365,13 @@ Summary (concise, action-item focused):"""
             )
             
             # Step 2: Read the file content
-            self.log(f"📖 Reading: {os.path.basename(target_file)}")
+            self.log(f"ðŸ“– Reading: {os.path.basename(target_file)}")
             self.speak_with_piper("Reading the file now.")
             
             file_data = self.get_file_content(os.path.basename(target_file))
             
             if not file_data or not file_data.get('content'):
-                self.log(f"❌ Could not read file: {target_file}")
+                self.log(f"âŒ Could not read file: {target_file}")
                 self.speak_with_piper("I had trouble reading the file. Please check it exists.")
                 return
             
@@ -2299,19 +2379,19 @@ Summary (concise, action-item focused):"""
             filename = file_data['filename']
             
             # Step 3: Send to Ollama/Brain for optimization analysis
-            self.log("🧠 Sending to AI brain for analysis...")
+            self.log("ðŸ§  Sending to AI brain for analysis...")
             self.speak_with_piper("Analyzing the code for optimization opportunities.")
             
             optimization_prompt = f"""You are an expert code reviewer analysing a specific codebase.
 
 ARCHITECTURE (read carefully before analysing):
-- This is a headless Python voice assistant — no GUI, no web framework serving users.
+- This is a headless Python voice assistant â€” no GUI, no web framework serving users.
 - NO SQL database, no SQLAlchemy, no db_session, no User/Conversation ORM models.
 - Conversation state is held in self.context_buffer (a Python list already in RAM).
-- Persistent memory is jarvis_memory.json — loaded once at startup, saved periodically.
+- Persistent memory is jarvis_memory.json â€” loaded once at startup, saved periodically.
 - Flask runs in a single daemon background thread solely to receive n8n webhooks on port 5001.
-- Background tasks use threading.Thread(daemon=True) — no thread pool is needed or appropriate.
-- There is nothing to cache — all runtime state is already in memory.
+- Background tasks use threading.Thread(daemon=True) â€” no thread pool is needed or appropriate.
+- There is nothing to cache â€” all runtime state is already in memory.
 DO NOT suggest: databases, SQLAlchemy, ThreadPoolExecutor for Flask.run(), or caching layers.
 
 FILE TO ANALYSE: {filename}
@@ -2324,15 +2404,15 @@ Identify the THREE most important real improvements specific to THIS codebase. F
 2. Impact: What concrete benefit would this provide?
 3. Suggestion: Show a specific code change (not a generic pattern)
 
-Plain text only — no markdown, no bullet symbols, no code fences."""
+Plain text only â€” no markdown, no bullet symbols, no code fences."""
             
             # Send to brain (Ollama)
-            self.status_var.set("Status: 🧠 AI Analysis in Progress...")
+            self.status_var.set("Status: ðŸ§  AI Analysis in Progress...")
             optimization_analysis = self.call_smart_model(optimization_prompt, timeout=120)
-            self.log("✓ Analysis complete")
+            self.log("âœ“ Analysis complete")
             
             # Step 4: Create Google Doc with the analysis (Scribe Workflow)
-            self.log("📝 Creating Google Doc...")
+            self.log("ðŸ“ Creating Google Doc...")
             self.speak_with_piper("Creating your optimization report document.")
             
             # Use write_optimization_to_doc() for clean Scribe workflow
@@ -2342,7 +2422,7 @@ Plain text only — no markdown, no bullet symbols, no code fences."""
             )
             
             if not doc_result or not doc_result.get('success'):
-                self.log("❌ Failed to create Google Doc")
+                self.log("âŒ Failed to create Google Doc")
                 self.speak_with_piper("I encountered an error creating the document.")
                 return
             
@@ -2377,7 +2457,7 @@ Plain text only — no markdown, no bullet symbols, no code fences."""
             doc_title = doc_result.get('title', 'Optimization Report')
             preview = optimization_analysis[:3000]
             if len(optimization_analysis) > 3000:
-                preview += "\n\n[... truncated — see Google Doc for full report]"
+                preview += "\n\n[... truncated â€” see Google Doc for full report]"
             
             focus_title = f"[{new_short_alias}] {doc_title}"
             self.dashboard.push_focus("code", focus_title, preview)
@@ -2385,7 +2465,7 @@ Plain text only — no markdown, no bullet symbols, no code fences."""
             
             confirmation = f"Sir, the optimization report for {filename} is ready. It is referenced as {new_short_alias}."
             self.speak_with_piper(confirmation)
-            self.log(f"🔊 Confirmed: {confirmation}")
+            self.log(f"ðŸ”Š Confirmed: {confirmation}")
             
             self.last_intent = "optimization"
             self.save_memory()
@@ -2393,13 +2473,13 @@ Plain text only — no markdown, no bullet symbols, no code fences."""
             if hasattr(self, 'dashboard'):
                 self.dashboard.push_state(mode="idle")
 
-            logger.info(f"✓ Optimization workflow complete for {filename}")
+            logger.info(f"âœ“ Optimization workflow complete for {filename}")
             self.status_var.set("Status: Ready")
             
         except Exception as e:
             error_msg = f"Error in optimization workflow: {e}"
             logger.error(error_msg, exc_info=True)
-            self.log(f"❌ {error_msg}")
+            self.log(f"âŒ {error_msg}")
             self.speak_with_piper("An error occurred during the analysis. Please check the console for details.")
     
     def _route_by_context(self, raw_text, text_lower):
@@ -2545,7 +2625,7 @@ Plain text only — no markdown, no bullet symbols, no code fences."""
     def fallback_to_llm(self, raw_text, context=""):
         """Fallback to the general-purpose LLM brain for unhandled queries."""
         if self.gaming_mode:
-            self.log("⚠️  Gaming Mode active - AI brain disabled")
+            self.log("âš ï¸  Gaming Mode active - AI brain disabled")
             self.speak_with_piper("Gaming mode is enabled, I cannot process that request.")
             return
 
@@ -2650,7 +2730,7 @@ RESPONSE GUIDELINES:
 
             self.interaction_count += 1
             if self.health_intervener():
-                self.log("💊 Proposing a health break...")
+                self.log("ðŸ’Š Proposing a health break...")
 
             self.save_memory()
             self.last_interaction_time = time.time()
@@ -2671,7 +2751,7 @@ RESPONSE GUIDELINES:
             msg = ("Sir, you have been working for over "
                    f"{int(elapsed_time)} minutes. "
                    "I recommend a short break when you are ready.")
-            self.log(f"💊 {msg}")
+            self.log(f"ðŸ’Š {msg}")
             self.speak_with_piper(msg)
             return True
         return False
@@ -2686,7 +2766,7 @@ RESPONSE GUIDELINES:
                     item_path = os.path.join(self.vault_root, item)
                     if os.path.isdir(item_path):
                         self.available_projects.append(item)
-                logger.info(f"✓ Vault scan complete: {len(self.available_projects)} projects found")
+                logger.info(f"âœ“ Vault scan complete: {len(self.available_projects)} projects found")
                 logger.debug(f"Projects: {', '.join(self.available_projects)}")
             else:
                 logger.error(f"Vault root not found: {self.vault_root}")
@@ -2703,7 +2783,7 @@ RESPONSE GUIDELINES:
             project_list = "Projects in your Vault:\n"
             for project in sorted(self.available_projects):
                 marker = "[ACTIVE]" if project == self.active_project else ""
-                project_list += f"  • {project} {marker}\n"
+                project_list += f"  â€¢ {project} {marker}\n"
             
             logger.info(f"Vault projects listed (active: {self.active_project})")
             return project_list
@@ -2803,9 +2883,9 @@ RESPONSE GUIDELINES:
             
             output = f"Search Results for '{query}' ({files_searched} files searched):\n\n"
             for project in sorted(results.keys()):
-                output += f"📁 {project}:\n"
+                output += f"ðŸ“ {project}:\n"
                 for file in sorted(results[project])[:10]:  # Limit to 10 per project
-                    output += f"   • {file}\n"
+                    output += f"   â€¢ {file}\n"
                 if len(results[project]) > 10:
                     output += f"   ... and {len(results[project]) - 10} more\n"
             
@@ -3006,8 +3086,8 @@ RESPONSE GUIDELINES:
                     if project != self.active_project:
                         old_project = self.active_project
                         self.active_project = project
-                        logger.info(f"🔀 Project switch: {old_project} → {self.active_project}")
-                        self.log(f"📁 Switched to project: {self.active_project}")
+                        logger.info(f"ðŸ”€ Project switch: {old_project} â†’ {self.active_project}")
+                        self.log(f"ðŸ“ Switched to project: {self.active_project}")
                         return True
         except Exception as e:
             logger.error(f"Project detection failed: {e}")
@@ -3193,7 +3273,7 @@ RESPONSE GUIDELINES:
     def interrupt_and_speak(self, message):
         """Interrupt current activity and speak urgent message."""
         logger.warning(f"INTERRUPT: {message}")
-        self.log(f"🚨 URGENT: {message}")
+        self.log(f"ðŸš¨ URGENT: {message}")
         # The message will be processed before process_conversation completes
         # due to self.urgent_interrupt flag
         self.speak_with_piper(message)
@@ -3204,8 +3284,8 @@ RESPONSE GUIDELINES:
         self.gaming_mode = not self.gaming_mode
         
         if self.gaming_mode:
-            self.log("🎮 Gaming Mode: ENABLED")
-            self.log("   → Mic disabled, resources freed")
+            self.log("ðŸŽ® Gaming Mode: ENABLED")
+            self.log("   â†’ Mic disabled, resources freed")
             logger.info("Gaming mode activated - stopping all listening and freeing resources")
             
             # Stop listening and clean up resources
@@ -3221,8 +3301,8 @@ RESPONSE GUIDELINES:
             
             self.status_var.set("Status: Gaming Mode - Mic Off")
         else:
-            self.log("🎮 Gaming Mode: DISABLED")
-            self.log("   → Returning to Normal Mode")
+            self.log("ðŸŽ® Gaming Mode: DISABLED")
+            self.log("   â†’ Returning to Normal Mode")
             logger.info("Gaming mode deactivated - returning to normal mode")
             self.status_var.set("Status: Standby")
             
@@ -3241,16 +3321,16 @@ RESPONSE GUIDELINES:
         if self.conversation_mode:
             # Can't enable if gaming mode is on
             if self.gaming_mode:
-                self.log("⚠️  Cannot enable Conversation Mode during Gaming Mode")
+                self.log("âš ï¸  Cannot enable Conversation Mode during Gaming Mode")
                 logger.warning("Attempted to enable conversation mode during gaming mode")
                 self.conversation_mode = False
                 return
             
-            self.log("💬 Conversation Mode: ENABLED")
-            self.log("   → Open mic - just speak naturally!")
-            self.log("   → No wake word needed, automatic speech detection")
+            self.log("ðŸ’¬ Conversation Mode: ENABLED")
+            self.log("   â†’ Open mic - just speak naturally!")
+            self.log("   â†’ No wake word needed, automatic speech detection")
             logger.info("Conversation mode activated - continuous speech detection with VAD")
-            self.status_var.set("Status: 💬 Speak freely...")
+            self.status_var.set("Status: ðŸ’¬ Speak freely...")
             
             # Update dashboard: conversation mode enabled
             if hasattr(self, 'dashboard'):
@@ -3260,8 +3340,8 @@ RESPONSE GUIDELINES:
             if not self.is_listening:
                 self.start_listening()
         else:
-            self.log("💬 Conversation Mode: DISABLED")
-            self.log("   → Back to wake word detection")
+            self.log("ðŸ’¬ Conversation Mode: DISABLED")
+            self.log("   â†’ Back to wake word detection")
             logger.info("Conversation mode deactivated - back to normal wake word mode")
             self.status_var.set("Status: Monitoring...")
             
@@ -3291,18 +3371,176 @@ RESPONSE GUIDELINES:
             ]
         return "\n".join([f"{i.get('title', 'Untitled')}: {i.get('snippet', '')}" for i in items])
 
+    def _extract_calendar_window(self, text: str):
+        """Derive a calendar query window from natural phrasing."""
+        now = datetime.now()
+        t = (text or "").lower()
+        day_names = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+
+        if "tomorrow" in t:
+            start = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            end = start + timedelta(days=1)
+            return start, end, "tomorrow"
+
+        for i, day in enumerate(day_names):
+            if day in t:
+                days_ahead = (i - now.weekday()) % 7
+                start = (now + timedelta(days=days_ahead)).replace(hour=0, minute=0, second=0, microsecond=0)
+                end = start + timedelta(days=1)
+                return start, end, day.title()
+
+        if "today" in t or "my day" in t:
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            end = start + timedelta(days=1)
+            return start, end, "today"
+
+        # Default: next 7 days.
+        start = now
+        end = now + timedelta(days=7)
+        return start, end, "the next 7 days"
+
+    def get_calendar_events(self, start_dt=None, end_dt=None, max_results=15):
+        """Fetch calendar events from Google Calendar API for a window."""
+        try:
+            if start_dt is None:
+                start_dt = datetime.now()
+            if end_dt is None:
+                end_dt = start_dt + timedelta(days=7)
+
+            creds = get_google_creds()
+            service = build('calendar', 'v3', credentials=creds)
+            events_result = service.events().list(
+                calendarId='primary',
+                timeMin=start_dt.isoformat() + "Z",
+                timeMax=end_dt.isoformat() + "Z",
+                maxResults=max_results,
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
+            return events_result.get('items', []) or []
+        except Exception as e:
+            logger.error(f"Calendar API Error: {e}")
+            return None
+
+    @staticmethod
+    def _format_calendar_events(events):
+        """Format calendar events for focus panel + spoken response."""
+        if not events:
+            return "No events found."
+        lines = []
+        for idx, ev in enumerate(events, 1):
+            start = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date") or ""
+            when = start
+            try:
+                if "T" in start:
+                    dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+                    when = dt.strftime("%a %d %b %I:%M %p")
+                elif start:
+                    dt = datetime.fromisoformat(start)
+                    when = dt.strftime("%a %d %b (all day)")
+            except Exception:
+                pass
+            summary = ev.get("summary", "(No title)")
+            lines.append(f"{idx}. {when} - {summary}")
+        return "\n".join(lines)
+
     def get_calendar(self):
-        """Get calendar events using authenticated Google Calendar API."""
+        """Backwards-compatible helper: return upcoming 7-day calendar summary."""
+        events = self.get_calendar_events(datetime.now(), datetime.now() + timedelta(days=7), max_results=10)
+        if events is None:
+            return "I couldn't access your calendar right now."
+        return self._format_calendar_events(events)
+
+    def handle_calendar_read(self, user_request):
+        """Authoritative calendar read: query Google Calendar for requested date window."""
+        start_dt, end_dt, label = self._extract_calendar_window(user_request)
+        events = self.get_calendar_events(start_dt, end_dt, max_results=20)
+        if events is None:
+            self.speak_with_piper("I couldn't access your calendar right now.")
+            return
+
+        self.last_calendar_events = []
+        for i, ev in enumerate(events, 1):
+            st = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date")
+            self.last_calendar_events.append({
+                "index": i,
+                "id": ev.get("id"),
+                "summary": ev.get("summary", "(No title)"),
+                "start": st
+            })
+
+        if not events:
+            reply = f"You have no calendar events for {label}."
+            self.speak_with_piper(reply)
+            self.dashboard.push_focus("docs", "Calendar", reply)
+            self.last_intent = "calendar"
+            return
+
+        cal_text = self._format_calendar_events(events[:10])
+        reply = f"You have {len(events)} event{'s' if len(events) != 1 else ''} for {label}. Showing the details."
+        self.speak_with_piper(reply)
+        self.dashboard.push_focus("docs", f"Calendar - {label}", cal_text)
+        self.log_vault_action("calendar_read", f"Read calendar for {label}", metadata={"count": len(events)})
+        self.last_intent = "calendar"
+
+    def create_calendar_event(self, title: str, start_dt: datetime, end_dt: datetime):
+        """Create a Google Calendar event and return created event object or None."""
         try:
             creds = get_google_creds()
             service = build('calendar', 'v3', credentials=creds)
-            # Example: Get next 10 events
-            # events_result = service.events().list(calendarId='primary', maxResults=10).execute()
-            # events = events_result.get('items', [])
-            return "You have a project meeting at 2 PM and a physiotherapy session at 4 PM."
+            event_body = {
+                "summary": title,
+                "start": {"dateTime": start_dt.isoformat(), "timeZone": "Europe/London"},
+                "end": {"dateTime": end_dt.isoformat(), "timeZone": "Europe/London"},
+            }
+            return service.events().insert(calendarId='primary', body=event_body).execute()
         except Exception as e:
-            self.log(f"Calendar API Error: {e}")
-            return "Error accessing calendar."
+            logger.error(f"Calendar create error: {e}")
+            return None
+
+    def handle_calendar_action(self, user_request):
+        """Create a calendar event from natural language (book/schedule/add)."""
+        text = (user_request or "").strip()
+        text_l = text.lower()
+        m = re.search(
+            r"\b(?:book|schedule|add|create)\b(?:\s+(?:an?\s+)?)?(?:event|meeting|appointment|call)?\s*(?:for|about)?\s*(.+)",
+            text_l
+        )
+        payload = m.group(1).strip() if m else ""
+        if not payload:
+            self.speak_with_piper("What should I book, and when?")
+            return
+
+        # Split title and time by common connectors.
+        split_m = re.search(r"\b(?:at|on|in|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", payload)
+        if split_m:
+            idx = split_m.start()
+            title = payload[:idx].strip(" ,.-")
+            time_expr = payload[idx:].strip()
+        else:
+            title = payload
+            time_expr = ""
+
+        if not title:
+            title = "Untitled event"
+
+        start_dt, end_dt = self.parse_relative_datetime(time_expr) if time_expr else (None, None)
+        if not start_dt:
+            self.pending_calendar_title = title
+            self.speak_with_piper(f"Sure. What time should I book {title}?")
+            return
+
+        event = self.create_calendar_event(title, start_dt, end_dt)
+        if not event:
+            self.speak_with_piper("I had trouble creating that event.")
+            return
+
+        when = start_dt.strftime('%A %d %b at %I:%M %p').lstrip('0')
+        msg = f"Done. I've booked {title} for {when}."
+        self.speak_with_piper(msg)
+        self.log_vault_action("calendar_created", f"Created: {title} at {when}")
+        self.dashboard.push_focus("docs", "Calendar", self.get_calendar())
+        self.last_intent = "calendar"
     
     def get_docs_content(self, doc_id):
         """Read Google Docs content using authenticated API."""
@@ -3355,12 +3593,12 @@ RESPONSE GUIDELINES:
                     logger.warning(f"Failed to fetch email details: {e}")
                     continue
             
-            logger.info(f"✓ Found {len(emails)} email(s) matching: {query}")
+            logger.info(f"âœ“ Found {len(emails)} email(s) matching: {query}")
             return emails
             
         except Exception as e:
             logger.error(f"Email search error: {e}")
-            self.log(f"❌ Email search failed: {e}")
+            self.log(f"âŒ Email search failed: {e}")
             return []
     
     def get_recent_emails(self, limit=5):
@@ -3398,12 +3636,12 @@ RESPONSE GUIDELINES:
                     logger.warning(f"Failed to fetch email details: {e}")
                     continue
             
-            logger.info(f"✓ Retrieved {len(emails)} recent email(s)")
+            logger.info(f"âœ“ Retrieved {len(emails)} recent email(s)")
             return emails
             
         except Exception as e:
             logger.error(f"Failed to get recent emails: {e}")
-            self.log(f"❌ Failed to get recent emails: {e}")
+            self.log(f"âŒ Failed to get recent emails: {e}")
             return []
     
     def send_email(self, to_address, subject, body):
@@ -3436,13 +3674,13 @@ RESPONSE GUIDELINES:
             send_message = {'raw': raw_message}
             result = service.users().messages().send(userId='me', body=send_message).execute()
             
-            logger.info(f"✓ Email sent to {to_address}: {subject}")
-            self.log(f"✓ Email sent to {to_address}")
+            logger.info(f"âœ“ Email sent to {to_address}: {subject}")
+            self.log(f"âœ“ Email sent to {to_address}")
             return True
             
         except Exception as e:
             logger.error(f"Email send error: {e}")
-            self.log(f"❌ Failed to send email: {e}")
+            self.log(f"âŒ Failed to send email: {e}")
             return False
     
     def reply_to_email(self, message_id, reply_text):
@@ -3488,13 +3726,13 @@ RESPONSE GUIDELINES:
             }
             
             result = service.users().messages().send(userId='me', body=send_message).execute()
-            logger.info(f"✓ Reply sent to email thread")
-            self.log(f"✓ Reply sent")
+            logger.info(f"âœ“ Reply sent to email thread")
+            self.log(f"âœ“ Reply sent")
             return True
             
         except Exception as e:
             logger.error(f"Email reply error: {e}")
-            self.log(f"❌ Failed to send reply: {e}")
+            self.log(f"âŒ Failed to send reply: {e}")
             return False
 
     def check_piper_installation(self):
@@ -3502,7 +3740,7 @@ RESPONSE GUIDELINES:
         try:
             self.piper_exe = self.resolve_piper_executable()
             if not self.piper_exe:
-                logger.warning("⚠️  Piper TTS not found - wake word acknowledgment disabled")
+                logger.warning("âš ï¸  Piper TTS not found - wake word acknowledgment disabled")
                 return False
 
             result = subprocess.run(
@@ -3510,10 +3748,10 @@ RESPONSE GUIDELINES:
                 capture_output=True,
                 timeout=3
             )
-            logger.info("✓ Piper TTS is available")
+            logger.info("âœ“ Piper TTS is available")
             return True
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            logger.warning("⚠️  Piper TTS not found - wake word acknowledgment disabled")
+            logger.warning("âš ï¸  Piper TTS not found - wake word acknowledgment disabled")
             return False
 
     def resolve_piper_executable(self):
@@ -3534,7 +3772,7 @@ RESPONSE GUIDELINES:
 
         for path in candidates:
             if path and os.path.exists(path):
-                logger.info(f"✓ Piper executable found: {path}")
+                logger.info(f"âœ“ Piper executable found: {path}")
                 return path
 
         return None
@@ -3543,17 +3781,17 @@ RESPONSE GUIDELINES:
         """Generate the 'yes' audio file if it doesn't exist."""
         if not self.piper_available:
             logger.warning("Skipping yes.wav generation - Piper not available")
-            self.log("⚠️  Piper TTS not installed - using beep for wake word acknowledgment")
+            self.log("âš ï¸  Piper TTS not installed - using beep for wake word acknowledgment")
             self.log("   Install Piper for voice: https://github.com/rhasspy/piper/releases")
             return
         
         if os.path.exists(self.yes_audio_path):
-            logger.info(f"✓ Wake word audio asset found: {self.yes_audio_path}")
+            logger.info(f"âœ“ Wake word audio asset found: {self.yes_audio_path}")
             return
         
         try:
             logger.info("Generating wake word acknowledgment audio...")
-            self.log("🎵 Generating 'Yes?' audio with Jarvis voice...")
+            self.log("ðŸŽµ Generating 'Yes?' audio with Jarvis voice...")
             model_path = os.path.join(os.path.dirname(__file__), "jarvis-high.onnx")
             result = subprocess.run(
                 [self.piper_exe, "-m", model_path, "-f", self.yes_audio_path],
@@ -3563,14 +3801,14 @@ RESPONSE GUIDELINES:
             )
             
             if result.returncode == 0:
-                logger.info(f"✓ Created {self.yes_audio_path} with Jarvis voice")
-                self.log(f"✓ Audio asset created: {self.yes_audio_path}")
+                logger.info(f"âœ“ Created {self.yes_audio_path} with Jarvis voice")
+                self.log(f"âœ“ Audio asset created: {self.yes_audio_path}")
             else:
                 logger.error(f"Failed to generate yes.wav: {result.stderr.decode()}")
-                self.log("⚠️  Audio generation failed - will use beep fallback")
+                self.log("âš ï¸  Audio generation failed - will use beep fallback")
         except Exception as e:
             logger.error(f"Error generating yes.wav: {e}")
-            self.log(f"⚠️  Audio generation error - will use beep fallback")
+            self.log(f"âš ï¸  Audio generation error - will use beep fallback")
     
     def play_yes_audio(self):
         """Play the pre-generated 'yes' audio file or beep as fallback."""
@@ -3613,7 +3851,7 @@ RESPONSE GUIDELINES:
         try:
             logger.info("Listening with VAD (waiting for speech)...")
             self.status_var.set("Status: Listening...")
-            self.log("🎤 Listening for your command...")
+            self.log("ðŸŽ¤ Listening for your command...")
             
             # Update dashboard: listening mode
             if hasattr(self, 'dashboard'):
@@ -3650,7 +3888,7 @@ RESPONSE GUIDELINES:
                     # Speech detected
                     if not is_speaking:
                         logger.debug(f"Speech started (energy: {energy:.0f})")
-                        self.status_var.set("Status: 🎤 Recording...")
+                        self.status_var.set("Status: ðŸŽ¤ Recording...")
                         is_speaking = True
                         speech_counter = 0
                     
@@ -3684,7 +3922,7 @@ RESPONSE GUIDELINES:
             
             if not speech_frames or speech_counter < min_speech_frames:
                 logger.warning("No valid speech detected")
-                self.log("⚠️  No speech detected")
+                self.log("âš ï¸  No speech detected")
                 return None
             
             logger.info(f"Captured {len(speech_frames)} audio samples via VAD")
@@ -3714,7 +3952,7 @@ RESPONSE GUIDELINES:
             
             # Transcribe with Whisper
             self.status_var.set("Status: Transcribing...")
-            self.log("📝 Transcribing...")
+            self.log("ðŸ“ Transcribing...")
             logger.info(f"Starting transcription via {self.stt_backend} ({self.stt_device})...")
             
             elapsed_ms = 0
@@ -3739,7 +3977,7 @@ RESPONSE GUIDELINES:
                 return text
             else:
                 logger.warning("No speech detected in transcription")
-                self.log("⚠️  No speech detected")
+                self.log("âš ï¸  No speech detected")
                 return None
                 
         except Exception as e:
@@ -3801,7 +4039,7 @@ RESPONSE GUIDELINES:
                     # Speech detected
                     if not is_speaking:
                         logger.debug(f"Speech started (energy: {energy:.0f})")
-                        self.status_var.set("Status: 🎤 Listening...")
+                        self.status_var.set("Status: ðŸŽ¤ Listening...")
                         is_speaking = True
                         speech_counter = 0
                     
@@ -3830,7 +4068,7 @@ RESPONSE GUIDELINES:
                 # Update status periodically
                 if frames_captured % 50 == 0:
                     if not is_speaking:
-                        self.status_var.set("Status: 💬 Conversation Mode - Speak freely...")
+                        self.status_var.set("Status: ðŸ’¬ Conversation Mode - Speak freely...")
             
             if not speech_frames or speech_counter < min_speech_frames:
                 logger.debug("No valid speech detected")
@@ -3854,7 +4092,7 @@ RESPONSE GUIDELINES:
                 wf.writeframes(audio_data.tobytes())
             
             # Transcribe with Whisper
-            self.status_var.set("Status: 📝 Transcribing...")
+            self.status_var.set("Status: ðŸ“ Transcribing...")
             logger.info(f"Transcribing continuous speech via {self.stt_backend} ({self.stt_device})...")
             
             elapsed_ms = 0
@@ -3904,7 +4142,7 @@ RESPONSE GUIDELINES:
         Cached: reduces repeated text processing on similar inputs.
         """
         # Replace symbols with their spoken equivalents
-        text = text.replace('°', ' degrees ')  # Degree symbol → "degrees"
+        text = text.replace('Â°', ' degrees ')  # Degree symbol â†’ "degrees"
         
         # Replace email-style characters
         text = text.replace('<', '')  # Remove angle brackets
@@ -3972,14 +4210,14 @@ RESPONSE GUIDELINES:
             
             if not self.piper_available:
                 logger.warning("Piper TTS not available - cannot speak response")
-                self.log(f"🔇 TTS unavailable: {text}")
+                self.log(f"ðŸ”‡ TTS unavailable: {text}")
                 return
 
             if not getattr(self, "piper_exe", None):
                 self.piper_exe = self.resolve_piper_executable()
                 if not self.piper_exe:
                     logger.warning("Piper executable not found - cannot speak response")
-                    self.log(f"🔇 TTS unavailable (no piper.exe): {text}")
+                    self.log(f"ðŸ”‡ TTS unavailable (no piper.exe): {text}")
                     return
             
             try:
@@ -4069,9 +4307,9 @@ RESPONSE GUIDELINES:
                     stderr_text = result.stderr.decode(errors="ignore").strip()
                     if stderr_text:
                         logger.debug(f"Piper stderr: {stderr_text}")
-                        self.log(f"🔇 TTS failed (piper): {stderr_text}")
+                        self.log(f"ðŸ”‡ TTS failed (piper): {stderr_text}")
                     else:
-                        self.log(f"🔇 TTS failed: {text}")
+                        self.log(f"ðŸ”‡ TTS failed: {text}")
                 
                 # Clean up temp file
                 try:
@@ -4154,7 +4392,7 @@ RESPONSE GUIDELINES:
                     if "access violation" not in str(e).lower():
                         logger.warning(f"Error deleting recorder: {e}")
                 self.recorder = None
-                self.log("✓ Recorder cleaned up")
+                self.log("âœ“ Recorder cleaned up")
             
             # Clean up porcupine
             if self.porcupine is not None:
@@ -4164,7 +4402,7 @@ RESPONSE GUIDELINES:
                 except Exception as e:
                     logger.warning(f"Error deleting porcupine: {e}")
                 self.porcupine = None
-                self.log("✓ Porcupine cleaned up")
+                self.log("âœ“ Porcupine cleaned up")
             
             logger.info("Audio resources cleanup complete")
         except Exception as e:
@@ -4187,8 +4425,8 @@ RESPONSE GUIDELINES:
             self.porcupine = pvporcupine.create(access_key=PICOVOICE_KEY, keywords=['jarvis'])
             if self.porcupine is None:
                 raise RuntimeError("Porcupine creation returned None")
-            logger.info("✓ Porcupine created successfully")
-            self.log("✓ Wake word engine initialized")
+            logger.info("âœ“ Porcupine created successfully")
+            self.log("âœ“ Wake word engine initialized")
             
             # Create recorder
             logger.debug(f"Creating recorder with frame_length={self.porcupine.frame_length}")
@@ -4203,10 +4441,10 @@ RESPONSE GUIDELINES:
             
             logger.debug("Starting recorder...")
             self.recorder.start()
-            logger.info("✓ Recorder started successfully")
+            logger.info("âœ“ Recorder started successfully")
             
             self.status_var.set("Status: Monitoring...")
-            self.log("🎤 Listening for wake word 'Jarvis'")
+            self.log("ðŸŽ¤ Listening for wake word 'Jarvis'")
             
             frame_count = 0
             detection_attempts = 0
@@ -4216,12 +4454,12 @@ RESPONSE GUIDELINES:
                 # Safety check - verify objects still exist
                 if self.porcupine is None:
                     logger.error("Porcupine became None during loop - exiting")
-                    self.log("⚠️  Error: Porcupine object lost")
+                    self.log("âš ï¸  Error: Porcupine object lost")
                     break
                 
                 if self.recorder is None:
                     logger.error("Recorder became None during loop - exiting")
-                    self.log("⚠️  Error: Recorder object lost")
+                    self.log("âš ï¸  Error: Recorder object lost")
                     break
                 
                 # Check if gaming mode was enabled
@@ -4239,7 +4477,7 @@ RESPONSE GUIDELINES:
                 if self.should_skip_wake_word():
                     # Conversation mode - open mic, continuous listening
                     logger.debug("Entering continuous listening mode")
-                    self.status_var.set("Status: 💬 Conversation Mode - Speak freely...")
+                    self.status_var.set("Status: ðŸ’¬ Conversation Mode - Speak freely...")
                     
                     # Continuously listen for speech
                     transcribed_text = self.continuous_listen_and_transcribe()
@@ -4248,7 +4486,7 @@ RESPONSE GUIDELINES:
                         # Process the conversation
                         self.process_conversation(transcribed_text)
                         # Immediately ready for next input
-                        self.status_var.set("Status: 💬 Ready for next input...")
+                        self.status_var.set("Status: ðŸ’¬ Ready for next input...")
                         time.sleep(0.5)  # Brief pause
                     else:
                         # No speech detected, continue monitoring
@@ -4269,7 +4507,7 @@ RESPONSE GUIDELINES:
                     
                     if keyword_index >= 0:
                         self.status_var.set("Status: Wake Word Heard!")
-                        self.log("👂 Wake word detected!")
+                        self.log("ðŸ‘‚ Wake word detected!")
                         logger.info(f"Wake word detected (index: {keyword_index}) after {detection_attempts} frames")
                         detection_attempts = 0
                         self._start_command_capture()
@@ -4295,7 +4533,7 @@ RESPONSE GUIDELINES:
                             self.process_conversation(transcribed_text)
                             self._end_command_capture()
                         else:
-                            self.log("⚠️  No command heard")
+                            self.log("âš ï¸  No command heard")
                             self.status_var.set("Status: Monitoring...")
                             self._end_command_capture()
                         
@@ -4398,8 +4636,8 @@ RESPONSE GUIDELINES:
         # Start Flask in background thread (port 5001 to avoid conflict with dashboard on 5000)
         flask_thread = threading.Thread(target=lambda: self.flask_app.run(host='127.0.0.1', port=5001, debug=False), daemon=True)
         flask_thread.start()
-        logger.info("✓ n8n webhook listener started on http://127.0.0.1:5001/jarvis/notify")
-        logger.info("✓ Email webhook listener started on http://127.0.0.1:5001/speak")
+        logger.info("âœ“ n8n webhook listener started on http://127.0.0.1:5001/jarvis/notify")
+        logger.info("âœ“ Email webhook listener started on http://127.0.0.1:5001/speak")
     
     # ===== RELATIVE TIME PARSER =====
     def parse_relative_datetime(self, time_expr):
@@ -4667,6 +4905,31 @@ RESPONSE GUIDELINES:
             except Exception as e:
                 logger.error(f"Reminder scheduler error: {e}")
 
+            # Health break cadence: every 2 hours after the latest health log.
+            try:
+                if self.next_health_break_reminder_ts and time.time() >= self.next_health_break_reminder_ts:
+                    summary = self._health_break_summary()
+                    msg = "Sir, it's been two hours since your last health check. Please take a short break. " + summary
+                    self.log(f"Health timer reminder: {msg}")
+                    if not self.gaming_mode and not self.is_speaking:
+                        self.speak_with_piper(msg)
+                    else:
+                        with self.queue_lock:
+                            self.notification_queue.append({
+                                "source": "Health",
+                                "message": msg,
+                                "timestamp": datetime.now().isoformat(),
+                                "metadata": {"type": "health_break"}
+                            })
+                    self.log_vault_action(
+                        "health_break_reminder",
+                        "Triggered 2-hour health reminder",
+                        metadata={"summary": summary, "timestamp": datetime.now().isoformat()}
+                    )
+                    self.next_health_break_reminder_ts = time.time() + self.health_break_interval_secs
+            except Exception as e:
+                logger.error(f"Health reminder processing error: {e}")
+
             # Idle-time alert for priority notifications.
             try:
                 is_idle = (time.time() - self.last_interaction_time) > IDLE_THRESHOLD
@@ -4870,4 +5133,5 @@ if __name__ == "__main__":
         print(f"\nError: {e}")
     finally:
         print("Jarvis GT2 stopped.")
+
 
